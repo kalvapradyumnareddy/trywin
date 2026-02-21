@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>TryWin Overseas Consultancy</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Google Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+
+    <style>
+        /* =============================
+           GLOBAL
+        ============================== */
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: 'Inter', sans-serif;
+            background-color: #f6f9fc;
+            color: #1f2937;
+            line-height: 1.6;
+        }
+
+        h1, h2 {
+            margin: 0 0 16px 0;
+            font-weight: 700;
+        }
+
+        p {
+            margin: 0 0 12px 0;
+            font-size: 18px;
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 0 20px;
+        }
+
+        section {
+            padding: 80px 0;
+        }
+
+        .center {
+            text-align: center;
+        }
+
+        /* =============================
+           HEADER
+        ============================== */
+        header {
+            background-color: #0a3d62;
+            color: white;
+            padding: 28px 0;
+        }
+
+        header h1 {
+            font-size: 34px;
+        }
+
+        header p {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+
+        /* =============================
+           BUTTERY HERO
+        ============================== */
+        .hero {
+            position: relative;
+            overflow: hidden;
+            background: linear-gradient(
+                135deg,
+                #ffffff 0%,
+                #f1f6fb 50%,
+                #e6eef7 100%
+            );
+        }
+
+        .hero::before,
+        .hero::after {
+            content: "";
+            position: absolute;
+            width: 420px;
+            height: 420px;
+            background: radial-gradient(circle, rgba(10,61,98,0.15), transparent 70%);
+            border-radius: 50%;
+            animation: float 14s ease-in-out infinite;
+        }
+
+        .hero::before {
+            top: -140px;
+            left: -140px;
+        }
+
+        .hero::after {
+            bottom: -140px;
+            right: -140px;
+            animation-delay: 7s;
+        }
+
+        .hero-content {
+            position: relative;
+            z-index: 1;
+            text-align: center;
+            animation: fadeUp 1s ease forwards;
+        }
+
+        .hero h2 {
+            font-size: 46px;
+            color: #0a3d62;
+        }
+
+        .hero p {
+            font-size: 22px;
+            color: #4b5563;
+            margin-bottom: 36px;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 16px 34px;
+            background: linear-gradient(135deg, #0a3d62, #09406a);
+            color: white;
+            text-decoration: none;
+            font-weight: 600;
+            border-radius: 8px;
+            box-shadow: 0 14px 34px rgba(10,61,98,0.25);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 20px 44px rgba(10,61,98,0.35);
+        }
+
+        /* =============================
+           COUNTRIES
+        ============================== */
+        .countries {
+            background-color: white;
+        }
+
+        .country-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 24px;
+            margin-top: 36px;
+        }
+
+        .country-card {
+            background: #f6f9fc;
+            padding: 24px;
+            border-radius: 14px;
+            text-align: center;
+            transition: transform 0.2s ease;
+        }
+
+        .country-card:hover {
+            transform: translateY(-4px);
+        }
+
+        .country-card img {
+            width: 64px;
+            height: 44px;
+            margin-bottom: 12px;
+        }
+
+        .country-card p {
+            font-weight: 600;
+            font-size: 18px;
+        }
+
+        /* =============================
+           TESTIMONIALS
+        ============================== */
+        .testimonials {
+            background-color: #eef3f8;
+        }
+
+        .testimonial-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 28px;
+            margin-top: 36px;
+        }
+
+        .testimonial-card {
+            background: white;
+            padding: 28px;
+            border-radius: 14px;
+            border-left: 5px solid #0a3d62;
+        }
+
+        .testimonial-card span {
+            display: block;
+            margin-top: 14px;
+            font-weight: 600;
+            color: #475569;
+        }
+
+        /* =============================
+           CONTACT
+        ============================== */
+        .contact {
+            background-color: white;
+            text-align: center;
+        }
+
+        .contact p {
+            font-size: 20px;
+        }
+
+        .contact a {
+            display: inline-block;
+            margin-top: 10px;
+            font-size: 20px;
+            color: #0a3d62;
+            font-weight: 700;
+            text-decoration: none;
+        }
+
+        /* =============================
+           FOOTER
+        ============================== */
+        footer {
+            background-color: #0a3d62;
+            color: white;
+            text-align: center;
+            padding: 22px;
+            font-size: 14px;
+        }
+
+        /* =============================
+           STICKY WHATSAPP
+        ============================== */
+        .whatsapp-float {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 68px;
+            height: 68px;
+            background-color: #25D366;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 6px 16px rgba(0,0,0,0.3);
+            z-index: 9999;
+        }
+
+        .whatsapp-float img {
+            width: 38px;
+            height: 38px;
+        }
+
+        /* =============================
+           ANIMATIONS
+        ============================== */
+        @keyframes fadeUp {
+            from {
+                opacity: 0;
+                transform: translateY(30px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes float {
+            0%, 100% {
+                transform: translateY(0);
+            }
+            50% {
+                transform: translateY(30px);
+            }
+        }
+
+        /* =============================
+           MOBILE
+        ============================== */
+        @media (max-width: 600px) {
+            header h1 {
+                font-size: 26px;
+            }
+
+            .hero h2 {
+                font-size: 32px;
+            }
+
+            .hero p {
+                font-size: 18px;
+            }
+
+            section {
+                padding: 64px 0;
+            }
+
+            .whatsapp-float {
+                width: 76px;
+                height: 76px;
+            }
+
+            .whatsapp-float img {
+                width: 42px;
+                height: 42px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <div class="container center">
+        <h1>TryWin Overseas Consultancy</h1>
+        <p>Your gateway to global education</p>
+    </div>
+</header>
+
+<section class="hero">
+    <div class="container hero-content">
+        <h2>Study Abroad with Confidence</h2>
+        <p>USA • UK • Australia • Canada</p>
+        <a href="#contact" class="btn">Contact Us</a>
+    </div>
+</section>
+
+<section class="countries">
+    <div class="container center">
+        <h2>Countries We Help With</h2>
+        <div class="country-grid">
+            <div class="country-card"><img src="https://flagcdn.com/w80/us.png"><p>USA</p></div>
+            <div class="country-card"><img src="https://flagcdn.com/w80/gb.png"><p>UK</p></div>
+            <div class="country-card"><img src="https://flagcdn.com/w80/au.png"><p>Australia</p></div>
+            <div class="country-card"><img src="https://flagcdn.com/w80/ca.png"><p>Canada</p></div>
+        </div>
+    </div>
+</section>
+
+<section class="testimonials">
+    <div class="container">
+        <h2 class="center">What Students Say</h2>
+        <div class="testimonial-grid">
+            <div class="testimonial-card">
+                <p>"TryWin guided me through the entire visa process smoothly."</p>
+                <span>— Ravi, USA</span>
+            </div>
+            <div class="testimonial-card">
+                <p>"Very professional and honest consultancy."</p>
+                <span>— Anjali, UK</span>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section id="contact" class="contact">
+    <div class="container">
+        <h2>Contact Us</h2>
+        <p>📞 Phone</p>
+        <a href="tel:+917997561484">+91 79975 61484</a>
+
+        <p style="margin-top:24px;">💬 WhatsApp</p>
+        <a href="https://wa.me/7997561484" target="_blank">Chat on WhatsApp</a>
+    </div>
+</section>
+
+<footer>
+    © 2026 TryWin Overseas Consultancy
+</footer>
+
+<a href="https://wa.me/7997561484" class="whatsapp-float" target="_blank">
+    <img src="https://upload.wikimedia.org/wikipedia/commons/6/6b/WhatsApp.svg">
+</a>
+
+</body>
+</html>
+
