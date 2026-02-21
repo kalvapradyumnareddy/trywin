@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: nginx
-          image: pradyumnareddy/trywin:1
+          image: pradyumnareddy/trywin:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 80
