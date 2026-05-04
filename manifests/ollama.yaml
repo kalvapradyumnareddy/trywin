@@ -13,31 +13,45 @@ spec:
       labels:
         app: ollama
     spec:
+
+   
+      initContainers:
+      - name: pull-model
+        image: ollama/ollama:latest
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Starting temporary Ollama server...";
+            ollama serve &   # start server in background
+            sleep 5;         # wait for server to be ready
+            ollama pull phi3.5;
+            echo "Model phi3.5 pulled successfully";
+        volumeMounts:
+        - name: ollama-data
+          mountPath: /root/.ollama
+
       containers:
       - name: ollama
         image: ollama/ollama:latest
         ports:
         - containerPort: 11434
+
         volumeMounts:
         - name: ollama-data
           mountPath: /root/.ollama
-        resources:
-          requests:
-            cpu: "2"
-            memory: "4Gi"
-          limits:
-            cpu: "4"
-            memory: "8Gi"
+
         readinessProbe:
           httpGet:
             path: /
             port: 11434
           initialDelaySeconds: 10
           periodSeconds: 10
+
       volumes:
       - name: ollama-data
         persistentVolumeClaim:
           claimName: ollama-pvc
+
 ---
 apiVersion: v1
 kind: Service
