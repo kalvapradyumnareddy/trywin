@@ -29,9 +29,12 @@ spec:
         - name: OPENAI_API_KEYS
           value: "rag-not-needed"
         resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
           limits:
             cpu: "1"
-            memory: "2Gi"
+            memory: "1Gi"
         readinessProbe:
           httpGet:
             path: /
