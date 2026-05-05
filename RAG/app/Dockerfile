@@ -1,18 +1,29 @@
+# Stage 1 — install and compile all dependencies
+FROM python:3.12-slim AS builder
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+
+# Install all packages; fastembed uses ONNX (no PyTorch/CUDA needed)
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# Pre-download the ONNX embedding model into the image so startup is instant
+RUN PYTHONPATH=/install/lib/python3.12/site-packages \
+    python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')"
+
+# Stage 2 — lean runtime image (no compiler toolchain)
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install system deps needed by some Python packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libmagic1 \
-  && rm -rf /var/lib/apt/lists/*
-
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Pre-download the embedding model so the container starts faster
-RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
+COPY --from=builder /install /usr/local
+COPY --from=builder /root/.cache/huggingface /root/.cache/huggingface
+COPY --from=builder /root/.cache/fastembed /root/.cache/fastembed
 
 COPY . .
 

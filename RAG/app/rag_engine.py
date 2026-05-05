@@ -9,7 +9,7 @@ from langchain_community.document_loaders import (
     Docx2txtLoader,
     TextLoader,
 )
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_chroma import Chroma
 from langchain_ollama import OllamaLLM
 from langchain.chains import RetrievalQA
@@ -48,11 +48,7 @@ class RAGEngine:
         os.makedirs(settings.chroma_persist_dir, exist_ok=True)
         os.makedirs(settings.documents_dir, exist_ok=True)
 
-        self._embeddings = HuggingFaceEmbeddings(
-            model_name=settings.embedding_model,
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
+        self._embeddings = FastEmbedEmbeddings(model_name=settings.embedding_model)
         self._vectorstore = Chroma(
             persist_directory=settings.chroma_persist_dir,
             embedding_function=self._embeddings,
