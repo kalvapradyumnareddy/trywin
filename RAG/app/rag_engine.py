@@ -48,7 +48,10 @@ class RAGEngine:
         os.makedirs(settings.chroma_persist_dir, exist_ok=True)
         os.makedirs(settings.documents_dir, exist_ok=True)
 
-        self._embeddings = FastEmbedEmbeddings(model_name=settings.embedding_model)
+        self._embeddings = FastEmbedEmbeddings(
+            model_name=settings.embedding_model,
+            cache_dir=os.environ.get("FASTEMBED_CACHE_PATH"),
+        )
         self._vectorstore = Chroma(
             persist_directory=settings.chroma_persist_dir,
             embedding_function=self._embeddings,

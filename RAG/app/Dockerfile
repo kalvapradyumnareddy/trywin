@@ -1,4 +1,4 @@
-# Stage 1 — install and compile all dependencies
+# Stage 1 — install dependencies and pre-download the embedding model
 FROM python:3.12-slim AS builder
 
 WORKDIR /app
@@ -8,13 +8,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-
-# Install all packages; fastembed uses ONNX (no PyTorch/CUDA needed)
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 
-# Pre-download the ONNX embedding model into the image so startup is instant
+# Download model to a known fixed path (avoids guessing fastembed's cache dir)
+ENV FASTEMBED_CACHE_PATH=/model-cache
 RUN PYTHONPATH=/install/lib/python3.12/site-packages \
-    python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')"
+    python -c "from fastembed import TextEmbedding; list(TextEmbedding('BAAI/bge-small-en-v1.5').embed(['warmup']))"
 
 # Stage 2 — lean runtime image (no compiler toolchain)
 FROM python:3.12-slim
@@ -22,8 +21,9 @@ FROM python:3.12-slim
 WORKDIR /app
 
 COPY --from=builder /install /usr/local
-COPY --from=builder /root/.cache/huggingface /root/.cache/huggingface
-COPY --from=builder /root/.cache/fastembed /root/.cache/fastembed
+COPY --from=builder /model-cache /model-cache
+
+ENV FASTEMBED_CACHE_PATH=/model-cache
 
 COPY . .
 
