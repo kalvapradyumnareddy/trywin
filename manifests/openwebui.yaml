@@ -29,9 +29,6 @@ spec:
         - name: OPENAI_API_KEYS
           value: "rag-not-needed"
         resources:
-          requests:
-            cpu: "500m"
-            memory: "1Gi"
           limits:
             cpu: "1"
             memory: "2Gi"

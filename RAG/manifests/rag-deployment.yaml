@@ -39,9 +39,6 @@ spec:
           mountPath: /data
 
         resources:
-          requests:
-            memory: "1Gi"
-            cpu: "500m"
           limits:
             memory: "3Gi"
             cpu: "2000m"
