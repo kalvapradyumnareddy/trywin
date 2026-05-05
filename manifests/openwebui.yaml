@@ -21,6 +21,13 @@ spec:
         env:
         - name: OLLAMA_BASE_URL
           value: http://ollama:11434
+        # Register the RAG API as an additional OpenAI-compatible connection.
+        # After applying, go to OpenWebUI → Settings → Connections and it will
+        # appear, or select "rag-documents" in the model picker to chat with docs.
+        - name: OPENAI_API_BASE_URLS
+          value: "http://rag-api:8000/v1"
+        - name: OPENAI_API_KEYS
+          value: "rag-not-needed"
         resources:
           requests:
             cpu: "500m"

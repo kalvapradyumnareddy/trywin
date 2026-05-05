@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-api
+  namespace: ai-stack
+  labels:
+    app: rag-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rag-api
+  template:
+    metadata:
+      labels:
+        app: rag-api
+    spec:
+      initContainers:
+      - name: init-documents-dir
+        image: busybox:stable
+        command: ["sh", "-c", "mkdir -p /data/documents /data/chroma"]
+        volumeMounts:
+        - name: rag-data
+          mountPath: /data
+
+      containers:
+      - name: rag-api
+        image: pradyumnareddy/rag-api:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+
+        envFrom:
+        - configMapRef:
+            name: rag-config
+
+        volumeMounts:
+        - name: rag-data
+          mountPath: /data
+
+        resources:
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+          limits:
+            memory: "3Gi"
+            cpu: "2000m"
+
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 15
+          failureThreshold: 5
+
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          failureThreshold: 3
+
+      volumes:
+      - name: rag-data
+        persistentVolumeClaim:
+          claimName: rag-data-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-api
+  namespace: ai-stack
+spec:
+  selector:
+    app: rag-api
+  ports:
+    - port: 8000
+      targetPort: 8000
+  type: ClusterIP
