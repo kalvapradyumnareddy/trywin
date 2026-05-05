@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import shutil
@@ -5,7 +6,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator, List, Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
@@ -153,30 +154,15 @@ def _build_answer_with_sources(result: dict) -> str:
     return answer
 
 
-async def _stream_chunks(content: str, model: str, cid: str) -> AsyncGenerator[str, None]:
-    created = int(time.time())
-    # First chunk: role delta
-    yield "data: " + json.dumps({
-        "id": cid, "object": "chat.completion.chunk", "created": created,
-        "model": model,
-        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
-    }) + "\n\n"
-    # Stream content word-by-word so it feels live in OpenWebUI
-    words = content.split(" ")
-    for i, word in enumerate(words):
-        chunk_text = word if i == 0 else " " + word
-        yield "data: " + json.dumps({
-            "id": cid, "object": "chat.completion.chunk", "created": created,
-            "model": model,
-            "choices": [{"index": 0, "delta": {"content": chunk_text}, "finish_reason": None}],
-        }) + "\n\n"
-    # Final chunk
-    yield "data: " + json.dumps({
-        "id": cid, "object": "chat.completion.chunk", "created": created,
-        "model": model,
-        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-    }) + "\n\n"
-    yield "data: [DONE]\n\n"
+def _sources_text(sources: list) -> str:
+    seen: set = set()
+    names = []
+    for s in sources:
+        src = s.get("source", "")
+        if src and src not in seen:
+            seen.add(src)
+            names.append(Path(src).name)
+    return ("\n\n**Sources:** " + ", ".join(names)) if names else ""
 
 
 @app.get("/v1/models")
@@ -197,7 +183,6 @@ async def chat_completions(request: ChatCompletionRequest):
     if rag is None:
         raise HTTPException(status_code=503, detail="RAG engine not ready")
 
-    # Use the last user message as the query
     user_messages = [m for m in request.messages if m.role == "user"]
     if not user_messages:
         raise HTTPException(status_code=400, detail="No user message found")
@@ -205,25 +190,57 @@ async def chat_completions(request: ChatCompletionRequest):
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
+    cid = f"chatcmpl-{uuid.uuid4().hex}"
+    created = int(time.time())
+
+    if request.stream:
+        try:
+            sources, token_gen = await rag.astream_query(question)
+        except Exception as exc:
+            logger.error("RAG stream query failed: %s", exc)
+            raise HTTPException(status_code=500, detail=str(exc))
+
+        async def generate():
+            yield "data: " + json.dumps({
+                "id": cid, "object": "chat.completion.chunk", "created": created,
+                "model": RAG_MODEL_ID,
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+            }) + "\n\n"
+            async for token in token_gen:
+                yield "data: " + json.dumps({
+                    "id": cid, "object": "chat.completion.chunk", "created": created,
+                    "model": RAG_MODEL_ID,
+                    "choices": [{"index": 0, "delta": {"content": token}, "finish_reason": None}],
+                }) + "\n\n"
+            footer = _sources_text(sources)
+            if footer:
+                yield "data: " + json.dumps({
+                    "id": cid, "object": "chat.completion.chunk", "created": created,
+                    "model": RAG_MODEL_ID,
+                    "choices": [{"index": 0, "delta": {"content": footer}, "finish_reason": None}],
+                }) + "\n\n"
+            yield "data: " + json.dumps({
+                "id": cid, "object": "chat.completion.chunk", "created": created,
+                "model": RAG_MODEL_ID,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            }) + "\n\n"
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(generate(), media_type="text/event-stream")
+
+    # Non-streaming: run blocking call in thread pool so event loop stays healthy
     try:
-        result = rag.query(question)
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, rag.query, question)
     except Exception as exc:
         logger.error("RAG query failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
     content = _build_answer_with_sources(result)
-    cid = f"chatcmpl-{uuid.uuid4().hex}"
-
-    if request.stream:
-        return StreamingResponse(
-            _stream_chunks(content, RAG_MODEL_ID, cid),
-            media_type="text/event-stream",
-        )
-
     return {
         "id": cid,
         "object": "chat.completion",
-        "created": int(time.time()),
+        "created": created,
         "model": RAG_MODEL_ID,
         "choices": [{
             "index": 0,

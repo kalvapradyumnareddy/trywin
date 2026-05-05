@@ -1,8 +1,11 @@
+import asyncio
+import json
 import os
 import logging
 from pathlib import Path
-from typing import List
+from typing import AsyncGenerator, List, Tuple
 
+import httpx
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import (
     PyPDFLoader,
@@ -107,6 +110,54 @@ class RAGEngine:
                     logger.error("Failed to ingest %s: %s", path, exc)
                     results[path.name] = {"status": "error", "error": str(exc)}
         return results
+
+    async def astream_query(self, question: str) -> Tuple[list, AsyncGenerator[str, None]]:
+        """
+        Returns (sources, token_async_generator).
+        Retrieval is done up-front; tokens stream from Ollama in real time via httpx.
+        """
+        loop = asyncio.get_running_loop()
+        retriever = self._vectorstore.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": settings.retriever_top_k},
+        )
+        docs = await loop.run_in_executor(None, retriever.invoke, question)
+
+        context = "\n\n".join(d.page_content for d in docs)
+        prompt_text = PROMPT_TEMPLATE.format(context=context, question=question)
+
+        seen: set = set()
+        sources: list = []
+        for d in docs:
+            key = (d.metadata.get("source", ""), d.metadata.get("page"))
+            if key not in seen:
+                seen.add(key)
+                sources.append({
+                    "source": d.metadata.get("source", ""),
+                    "page": d.metadata.get("page"),
+                })
+
+        async def _token_gen() -> AsyncGenerator[str, None]:
+            url = settings.ollama_base_url.rstrip("/") + "/api/generate"
+            payload = {
+                "model": settings.ollama_model,
+                "prompt": prompt_text,
+                "stream": True,
+                "options": {"temperature": 0.1},
+            }
+            async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
+                async with client.stream("POST", url, json=payload) as resp:
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+                        data = json.loads(line)
+                        token = data.get("response", "")
+                        if token:
+                            yield token
+                        if data.get("done"):
+                            break
+
+        return sources, _token_gen()
 
     def query(self, question: str) -> dict:
         result = self._qa_chain.invoke({"query": question})
