@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RAG Document Manager</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f1117;
+      --surface:   #1a1d2e;
+      --border:    #2d2f3e;
+      --accent:    #6366f1;
+      --accent-dim:#4f46e5;
+      --success:   #10b981;
+      --error:     #ef4444;
+      --warn:      #f59e0b;
+      --text:      #e2e8f0;
+      --muted:     #64748b;
+      --radius:    12px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Header ── */
+    header {
+      padding: 18px 32px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    header .logo { font-size: 26px; }
+    header h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.3px; }
+    header .status {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--muted);
+      transition: background 0.3s;
+    }
+    .dot.online { background: var(--success); box-shadow: 0 0 6px var(--success); }
+    .dot.error  { background: var(--error); }
+
+    /* ── Layout ── */
+    main {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 380px;
+      gap: 24px;
+      padding: 28px 32px;
+      max-width: 1300px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    section { display: flex; flex-direction: column; gap: 20px; }
+
+    h2 {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+    }
+
+    /* ── Drop Zone ── */
+    #drop-zone {
+      border: 2px dashed var(--border);
+      border-radius: var(--radius);
+      padding: 52px 24px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      background: var(--surface);
+      position: relative;
+    }
+    #drop-zone.drag-over {
+      border-color: var(--accent);
+      background: rgba(99,102,241,0.08);
+    }
+    #drop-zone .icon { font-size: 48px; margin-bottom: 16px; }
+    #drop-zone p { color: var(--muted); font-size: 14px; line-height: 1.7; }
+    #drop-zone strong { color: var(--text); }
+    #drop-zone .types {
+      margin-top: 12px;
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+    }
+    .badge {
+      background: var(--border);
+      border-radius: 6px;
+      padding: 3px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.5px;
+    }
+    #file-input { display: none; }
+
+    /* ── Upload Queue ── */
+    #queue { display: flex; flex-direction: column; gap: 10px; }
+    .queue-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      animation: slide-in 0.2s ease;
+    }
+    @keyframes slide-in {
+      from { opacity: 0; transform: translateY(-8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .queue-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .file-icon { font-size: 22px; flex-shrink: 0; }
+    .file-name {
+      flex: 1;
+      font-size: 14px;
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .file-status { font-size: 13px; flex-shrink: 0; }
+    .file-status.ok     { color: var(--success); }
+    .file-status.err    { color: var(--error); }
+    .file-status.busy   { color: var(--accent); }
+
+    .progress-bar {
+      height: 4px;
+      background: var(--border);
+      border-radius: 99px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 99px;
+      transition: width 0.2s;
+      width: 0%;
+    }
+    .progress-fill.done { background: var(--success); width: 100% !important; }
+    .progress-fill.err  { background: var(--error);   width: 100% !important; }
+
+    .chunks-label { font-size: 12px; color: var(--muted); }
+
+    /* ── Document Library ── */
+    #doc-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 340px;
+      overflow-y: auto;
+    }
+    .doc-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      font-size: 13px;
+    }
+    .doc-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .doc-item .ext {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: var(--border);
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    #doc-empty {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+      padding: 24px;
+    }
+
+    /* ── Query Panel ── */
+    #query-form { display: flex; gap: 10px; }
+    #query-input {
+      flex: 1;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+      padding: 10px 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    #query-input:focus { border-color: var(--accent); }
+    #query-input::placeholder { color: var(--muted); }
+
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 18px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover { background: var(--accent-dim); }
+    button:disabled { background: var(--border); color: var(--muted); cursor: not-allowed; }
+
+    #answer-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      font-size: 14px;
+      line-height: 1.75;
+      white-space: pre-wrap;
+      min-height: 80px;
+      color: var(--muted);
+    }
+    #answer-box.has-answer { color: var(--text); }
+
+    .sources {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    /* ── Toasts ── */
+    #toasts {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 100;
+    }
+    .toast {
+      padding: 12px 18px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 500;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      max-width: 320px;
+      animation: toast-in 0.25s ease;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    }
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .toast.success { border-color: var(--success); color: var(--success); }
+    .toast.error   { border-color: var(--error);   color: var(--error); }
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
+
+    @media (max-width: 800px) {
+      main { grid-template-columns: 1fr; padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <span class="logo">📚</span>
+  <h1>RAG Document Manager</h1>
+  <div class="status">
+    <div class="dot" id="status-dot"></div>
+    <span id="status-text">Connecting…</span>
+  </div>
+</header>
+
+<main>
+  <!-- Left: upload -->
+  <section>
+    <h2>Upload Documents</h2>
+
+    <div id="drop-zone">
+      <div class="icon">☁️</div>
+      <p><strong>Drop files here</strong> or click to browse</p>
+      <p>Your documents will be chunked and indexed automatically</p>
+      <div class="types">
+        <span class="badge">PDF</span>
+        <span class="badge">DOCX</span>
+        <span class="badge">DOC</span>
+        <span class="badge">TXT</span>
+      </div>
+      <input type="file" id="file-input" multiple accept=".pdf,.docx,.doc,.txt" />
+    </div>
+
+    <h2>Upload Queue</h2>
+    <div id="queue">
+      <p style="color:var(--muted);font-size:13px;padding:8px 0">No uploads yet</p>
+    </div>
+  </section>
+
+  <!-- Right: library + query -->
+  <section>
+    <h2>Document Library <span id="doc-count" style="font-weight:400;color:var(--muted)"></span></h2>
+    <div id="doc-list">
+      <p id="doc-empty">Loading…</p>
+    </div>
+
+    <h2 style="margin-top:8px">Ask Your Documents</h2>
+    <form id="query-form">
+      <input id="query-input" type="text" placeholder="e.g. What is the main topic of report.pdf?" autocomplete="off" />
+      <button type="submit" id="ask-btn">Ask</button>
+    </form>
+    <div id="answer-box">Your answer will appear here.</div>
+  </section>
+</main>
+
+<div id="toasts"></div>
+
+<script>
+  const dropZone   = document.getElementById('drop-zone');
+  const fileInput  = document.getElementById('file-input');
+  const queue      = document.getElementById('queue');
+  const docList    = document.getElementById('doc-list');
+  const docCount   = document.getElementById('doc-count');
+  const docEmpty   = document.getElementById('doc-empty');
+  const queryForm  = document.getElementById('query-form');
+  const queryInput = document.getElementById('query-input');
+  const askBtn     = document.getElementById('ask-btn');
+  const answerBox  = document.getElementById('answer-box');
+  const statusDot  = document.getElementById('status-dot');
+  const statusText = document.getElementById('status-text');
+
+  let queueInitialised = false;
+
+  // ── File icon helper ──────────────────────────────────────────
+  function iconFor(name) {
+    const ext = name.split('.').pop().toLowerCase();
+    return { pdf: '📕', docx: '📘', doc: '📘', txt: '📄' }[ext] ?? '📎';
+  }
+
+  // ── Toast ─────────────────────────────────────────────────────
+  function toast(msg, type = 'success') {
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    el.textContent = msg;
+    document.getElementById('toasts').appendChild(el);
+    setTimeout(() => el.remove(), 4000);
+  }
+
+  // ── Status check ──────────────────────────────────────────────
+  async function checkStatus() {
+    try {
+      const r = await fetch('/api/health');
+      if (!r.ok) throw new Error();
+      const data = await r.json();
+      statusDot.className = 'dot online';
+      statusText.textContent = `Online · ${data.vector_store_chunks} chunks`;
+    } catch {
+      statusDot.className = 'dot error';
+      statusText.textContent = 'RAG API unreachable';
+    }
+  }
+
+  // ── Document library ─────────────────────────────────────────
+  async function loadDocs() {
+    try {
+      const r = await fetch('/api/documents');
+      const { documents } = await r.json();
+      docList.innerHTML = '';
+      if (!documents.length) {
+        docList.innerHTML = '<p id="doc-empty">No documents ingested yet.</p>';
+        docCount.textContent = '';
+        return;
+      }
+      docCount.textContent = `(${documents.length})`;
+      documents.forEach(name => {
+        const ext = name.split('.').pop().toUpperCase();
+        const el = document.createElement('div');
+        el.className = 'doc-item';
+        el.innerHTML = `<span>${iconFor(name)}</span><span title="${name}">${name}</span><span class="ext">${ext}</span>`;
+        docList.appendChild(el);
+      });
+    } catch {
+      docList.innerHTML = '<p id="doc-empty" style="color:var(--error)">Could not load documents.</p>';
+    }
+  }
+
+  // ── Upload a single file ──────────────────────────────────────
+  function uploadFile(file) {
+    if (!queueInitialised) {
+      queue.innerHTML = '';
+      queueInitialised = true;
+    }
+
+    const id = `f-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const item = document.createElement('div');
+    item.className = 'queue-item';
+    item.id = id;
+    item.innerHTML = `
+      <div class="queue-row">
+        <span class="file-icon">${iconFor(file.name)}</span>
+        <span class="file-name" title="${file.name}">${file.name}</span>
+        <span class="file-status busy" id="${id}-status">Uploading…</span>
+      </div>
+      <div class="progress-bar"><div class="progress-fill" id="${id}-bar"></div></div>
+      <span class="chunks-label" id="${id}-chunks"></span>`;
+    queue.prepend(item);
+
+    const fd = new FormData();
+    fd.append('file', file);
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.addEventListener('progress', e => {
+      if (e.lengthComputable) {
+        document.getElementById(`${id}-bar`).style.width = `${(e.loaded / e.total * 100).toFixed(0)}%`;
+      }
+    });
+
+    xhr.addEventListener('load', () => {
+      const bar    = document.getElementById(`${id}-bar`);
+      const status = document.getElementById(`${id}-status`);
+      const chunks = document.getElementById(`${id}-chunks`);
+      if (xhr.status === 200) {
+        const res = JSON.parse(xhr.responseText);
+        bar.className    = 'progress-fill done';
+        status.className = 'file-status ok';
+        status.textContent = '✓ Done';
+        chunks.textContent = `${res.chunks_ingested} chunks indexed`;
+        toast(`${file.name} ingested (${res.chunks_ingested} chunks)`);
+        loadDocs();
+        checkStatus();
+      } else {
+        bar.className    = 'progress-fill err';
+        status.className = 'file-status err';
+        status.textContent = '✗ Failed';
+        const msg = (() => { try { return JSON.parse(xhr.responseText).detail; } catch { return xhr.statusText; } })();
+        chunks.textContent = msg;
+        toast(`Failed: ${file.name} — ${msg}`, 'error');
+      }
+    });
+
+    xhr.addEventListener('error', () => {
+      document.getElementById(`${id}-bar`).className    = 'progress-fill err';
+      document.getElementById(`${id}-status`).className = 'file-status err';
+      document.getElementById(`${id}-status`).textContent = '✗ Error';
+      toast(`Network error uploading ${file.name}`, 'error');
+    });
+
+    xhr.open('POST', '/api/ingest/upload');
+    xhr.send(fd);
+  }
+
+  // ── Drag & drop ───────────────────────────────────────────────
+  dropZone.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => [...fileInput.files].forEach(uploadFile));
+
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    [...e.dataTransfer.files].forEach(uploadFile);
+  });
+
+  // ── Query ─────────────────────────────────────────────────────
+  queryForm.addEventListener('submit', async e => {
+    e.preventDefault();
+    const q = queryInput.value.trim();
+    if (!q) return;
+    askBtn.disabled = true;
+    askBtn.textContent = '…';
+    answerBox.className = 'answer-box';
+    answerBox.textContent = 'Thinking…';
+
+    try {
+      const r = await fetch('/api/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q }),
+      });
+      if (!r.ok) throw new Error((await r.json()).detail ?? r.statusText);
+      const { answer, sources } = await r.json();
+      answerBox.className = 'has-answer';
+
+      let html = answer.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      if (sources?.length) {
+        const srcs = [...new Set(sources.map(s => s.source?.split('/').pop()).filter(Boolean))];
+        html += `<div class="sources">Sources: ${srcs.join(', ')}</div>`;
+      }
+      answerBox.innerHTML = html;
+    } catch (err) {
+      answerBox.textContent = `Error: ${err.message}`;
+      answerBox.style.color = 'var(--error)';
+    } finally {
+      askBtn.disabled = false;
+      askBtn.textContent = 'Ask';
+    }
+  });
+
+  // ── Init ──────────────────────────────────────────────────────
+  checkStatus();
+  loadDocs();
+  setInterval(checkStatus, 30000);
+</script>
+</body>
+</html>

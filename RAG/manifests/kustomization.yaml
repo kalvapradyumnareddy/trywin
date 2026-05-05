@@ -8,3 +8,5 @@ resources:
   - rag-configmap.yaml
   - rag-deployment.yaml
   - rag-ingress.yaml
+  - upload-ui.yaml
+  - upload-ingress.yaml

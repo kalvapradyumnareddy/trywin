@@ -1,4 +1,4 @@
-name: Build and Push RAG Docker Image
+name: Build and Push RAG Docker Images
 
 on:
   push:
@@ -6,11 +6,22 @@ on:
       - main
     paths:
       - "RAG/app/**"
+      - "RAG/upload-ui/**"
   workflow_dispatch:
 
 jobs:
-  build-rag:
+  build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: rag-api
+            context: RAG/app
+            image: pradyumnareddy/rag-api
+          - name: rag-upload-ui
+            context: RAG/upload-ui
+            image: pradyumnareddy/rag-upload-ui
 
     steps:
       - name: Checkout repository
@@ -29,13 +40,13 @@ jobs:
         id: version
         run: echo "VERSION=${{ github.run_number }}" >> $GITHUB_OUTPUT
 
-      - name: Build and Push RAG API
+      - name: Build and Push ${{ matrix.name }}
         uses: docker/build-push-action@v5
         with:
-          context: RAG/app
+          context: ${{ matrix.context }}
           push: true
-          cache-from: type=gha,scope=rag-api
-          cache-to: type=gha,mode=max,scope=rag-api
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
           tags: |
-            pradyumnareddy/rag-api:${{ steps.version.outputs.VERSION }}
-            pradyumnareddy/rag-api:latest
+            ${{ matrix.image }}:${{ steps.version.outputs.VERSION }}
+            ${{ matrix.image }}:latest
