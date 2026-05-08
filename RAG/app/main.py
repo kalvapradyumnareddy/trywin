@@ -21,17 +21,22 @@ logger = logging.getLogger(__name__)
 rag: RAGEngine | None = None
 
 
+async def _startup_ingest() -> None:
+    existing = list(Path(settings.documents_dir).rglob("*"))
+    if any(p.suffix.lower() in SUPPORTED_EXTENSIONS for p in existing):
+        logger.info("Background ingest starting for existing documents...")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, rag.ingest_directory, settings.documents_dir)
+        logger.info("Background ingest done. Vector store has %d chunks.", rag.collection_count())
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global rag
     logger.info("Initializing RAG engine...")
     rag = RAGEngine()
-    # Auto-ingest any documents already present on startup
-    existing = list(Path(settings.documents_dir).rglob("*"))
-    if any(p.suffix.lower() in SUPPORTED_EXTENSIONS for p in existing):
-        logger.info("Auto-ingesting existing documents from %s", settings.documents_dir)
-        rag.ingest_directory(settings.documents_dir)
     logger.info("RAG engine ready. Vector store has %d chunks.", rag.collection_count())
+    asyncio.create_task(_startup_ingest())
     asyncio.create_task(rag.prewarm())
     yield
     await rag.aclose()
