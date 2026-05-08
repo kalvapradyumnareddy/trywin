@@ -22,12 +22,15 @@ rag: RAGEngine | None = None
 
 
 async def _startup_ingest() -> None:
+    if rag.collection_count() > 0:
+        logger.info("Vector store has %d chunks, skipping startup ingest", rag.collection_count())
+        return
     existing = list(Path(settings.documents_dir).rglob("*"))
     if any(p.suffix.lower() in SUPPORTED_EXTENSIONS for p in existing):
-        logger.info("Background ingest starting for existing documents...")
+        logger.info("Vector store empty — ingesting existing documents...")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, rag.ingest_directory, settings.documents_dir)
-        logger.info("Background ingest done. Vector store has %d chunks.", rag.collection_count())
+        logger.info("Startup ingest done. Vector store has %d chunks.", rag.collection_count())
 
 
 @asynccontextmanager
