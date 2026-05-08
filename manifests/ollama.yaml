@@ -24,8 +24,8 @@ spec:
             echo "Starting temporary Ollama server...";
             ollama serve &   # start server in background
             sleep 5;         # wait for server to be ready
-            ollama pull qwen2.5:0.5b;
-            echo "Model qwen2.5:0.5b pulled successfully";
+            ollama pull llama3.2:1b;
+            echo "Model llama3.2:1b pulled successfully";
         volumeMounts:
         - name: ollama-data
           mountPath: /root/.ollama

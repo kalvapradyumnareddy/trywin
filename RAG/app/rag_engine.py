@@ -82,8 +82,8 @@ class RAGEngine:
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
             temperature=0.1,
-            num_ctx=256,
-            num_predict=100,
+            num_ctx=512,
+            num_predict=150,
         )
         self._retriever = self._vectorstore.as_retriever(
             search_type="similarity",
@@ -267,9 +267,9 @@ class RAGEngine:
                 "stream": True,
                 "options": {
                     "temperature": 0.1,
-                    "num_ctx": 256,
-                    "num_predict": 100,
-                    "num_batch": 256,
+                    "num_ctx": 512,
+                    "num_predict": 150,
+                    "num_batch": 512,
                 },
             }
             async with self._http_client.stream("POST", url, json=payload) as resp:
