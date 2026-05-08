@@ -12,7 +12,6 @@ spec:
     metadata:
       labels:
         app: ollama
-    metadata:
       annotations:
         deploy-version: "3"
     spec:
