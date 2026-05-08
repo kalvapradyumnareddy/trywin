@@ -140,7 +140,20 @@ class RAGEngine:
 
         docs = loader.load()
         chunks = self._splitter.split_documents(docs)
-        self._vectorstore.add_documents(chunks)
+
+        # Remove any previously indexed chunks for this file so re-ingests
+        # never create duplicates (handles restarts and re-uploads cleanly).
+        try:
+            self._vectorstore._collection.delete(where={"source": file_path})
+        except Exception:
+            pass
+
+        # Deterministic IDs: md5(path)_chunkIndex — same file always produces
+        # the same IDs, so ChromaDB upserts rather than appends.
+        base = hashlib.md5(file_path.encode()).hexdigest()
+        ids = [f"{base}_{i}" for i in range(len(chunks))]
+        self._vectorstore.add_documents(chunks, ids=ids)
+
         logger.info("Ingested %d chunks from %s", len(chunks), file_path)
         self._cache.clear()
         return len(chunks)

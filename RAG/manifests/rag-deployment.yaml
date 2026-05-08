@@ -64,8 +64,9 @@ spec:
 
       volumes:
       - name: rag-data
-        persistentVolumeClaim:
-          claimName: rag-data-pvc
+        hostPath:
+          path: /home/pradyumna/rag
+          type: DirectoryOrCreate
 
 ---
 apiVersion: v1
