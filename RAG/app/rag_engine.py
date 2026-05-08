@@ -8,69 +8,159 @@
 #   answers using your data — not just its training knowledge.
 #
 # High-level flow:
-#   1. User uploads a PDF/DOCX/TXT file  →  ingest_file() splits it into
-#      small chunks and stores vector embeddings in ChromaDB.
-#   2. User asks a question  →  the retriever finds the most similar chunks.
+#   1. User uploads a PDF/DOCX/TXT  →  ingest_file() splits it into chunks
+#      and stores vector embeddings in ChromaDB.
+#   2. User asks a question  →  retriever finds the most similar chunks.
 #   3. Those chunks are injected into the LLM prompt as "context".
-#   4. The LLM (phi3.5 running in Ollama) reads the context and answers.
+#   4. The LLM (phi3.5 via Ollama) reads the context and writes an answer.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PYTHON BASICS REFRESHER (read this before the code)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# WHAT IS A FUNCTION?
+#   A function is a reusable block of code with a name. You write the logic
+#   once and can call (run) it as many times as you want from anywhere.
+#
+#   def greet(name):          ← define it
+#       return "Hello " + name
+#
+#   greet("Prajjumna")        ← call it → returns "Hello Prajjumna"
+#   greet("World")            ← call it again → returns "Hello World"
+#
+#   Without functions you'd copy-paste the same code everywhere and fixing
+#   a bug would mean changing it in 20 places.
+#
+# WHAT IS A CLASS?
+#   A class is a blueprint for creating objects that bundle related data
+#   (attributes) and functions (methods) together.
+#
+#   class Car:
+#       def __init__(self, brand):   ← runs when you create an object
+#           self.brand = brand       ← store data on the object
+#       def drive(self):             ← a method (function on an object)
+#           print(self.brand + " is moving")
+#
+#   my_car = Car("Toyota")   ← create an object (instance) from the blueprint
+#   my_car.drive()           ← call a method → "Toyota is moving"
+#
+#   `self` always refers to the specific object the method is called on.
+#   RAGEngine is a class — `rag = RAGEngine()` creates one object that holds
+#   all the components (ChromaDB, LLM, embeddings) for the lifetime of the app.
+#
+# WHAT IS `async` / `await`?
+#   Normal Python code is sequential: line 1 runs, finishes, then line 2 runs.
+#   If line 1 is "wait for the LLM to respond" that could take 30 seconds —
+#   during that time your program is frozen and can't serve other users.
+#
+#   `async def` marks a function as asynchronous — it can pause and let other
+#   code run while waiting for slow I/O (network calls, disk reads).
+#   `await` is the pause point: "start this, let other things run, come back
+#   when it's done."
+#
+#   async def get_answer():
+#       result = await ask_ollama("hello")  ← pause here, don't block
+#       return result
+#
+#   FastAPI is built entirely on async — every request is handled concurrently.
+#
+# WHAT IS `yield` / A GENERATOR?
+#   A normal function runs to completion and returns ONE value with `return`.
+#   A generator function uses `yield` to produce a SEQUENCE of values one at
+#   a time, pausing between each one.
+#
+#   def count_up():
+#       yield 1    ← produce 1, pause
+#       yield 2    ← produce 2, pause
+#       yield 3    ← produce 3, done
+#
+#   for n in count_up():   → prints 1, 2, 3 one at a time
+#       print(n)
+#
+#   We use `async def` + `yield` for streaming tokens: each token from Ollama
+#   is yielded immediately to the browser without waiting for the full answer.
+#
+# WHAT IS `self`?
+#   Inside a class method, `self` is the object itself. It lets you access
+#   the object's data and other methods.
+#   self._llm means "the _llm attribute stored on THIS RAGEngine instance".
+#   The underscore prefix (_llm, _retriever) is a Python convention meaning
+#   "internal — don't touch this from outside the class".
+#
+# WHAT IS A TYPE HINT?
+#   Python doesn't enforce types at runtime, but you can annotate them for
+#   readability and IDE autocomplete.
+#   def ingest_file(self, file_path: str) -> int:
+#   means: ingest_file takes a string and returns an int. Not enforced, but
+#   documents the intent.
 # =============================================================================
 
-import asyncio        # Python's built-in library for writing async (non-blocking) code
-import hashlib        # Used to generate a unique fingerprint (MD5 hash) for file paths
-import json           # Parse JSON responses from the Ollama API
-import os             # Interact with the operating system (create dirs, read env vars)
-import logging        # Write log messages so we can monitor what the app is doing
-from pathlib import Path                        # A cleaner way to work with file paths
-from typing import AsyncGenerator, List, Tuple  # Type hints — help with code readability
+import asyncio        # Built-in async task scheduling — run_in_executor, create_task
+import hashlib        # Produce a consistent fingerprint (MD5) from a string
+import json           # Convert between Python dicts and JSON strings
+import os             # OS operations: create directories, read environment variables
+import logging        # Structured logging — messages appear in `kubectl logs`
+from pathlib import Path                        # Clean file-path manipulation
+from typing import AsyncGenerator, List, Tuple  # Type hints for complex return types
 
-import httpx  # An async HTTP client — used to call the Ollama API directly
+import httpx  # Async HTTP client — used to stream tokens directly from Ollama's REST API
 
-# LangChain is a framework that makes it easier to build LLM-powered applications.
-# It provides ready-made components for splitting documents, storing embeddings,
-# and chaining retrieval + generation together.
+# ─────────────────────────────────────────────────────────────────────────────
+# LangChain imports
+# LangChain is a framework that provides ready-made building blocks for LLM apps.
+# Think of it like Lego pieces: splitter, embeddings, vector store, chain.
+# ─────────────────────────────────────────────────────────────────────────────
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-# ↑ Splits a long document into smaller overlapping chunks so they fit in the
-#   LLM's context window and can be embedded individually.
+# Splits a long document into smaller overlapping pieces (chunks).
+# "Recursive" = tries paragraph breaks → sentence breaks → word breaks,
+# always preferring natural language boundaries over arbitrary character counts.
 
 from langchain_community.document_loaders import (
-    PyPDFLoader,    # Reads text out of PDF files page by page
-    Docx2txtLoader, # Reads text out of Word (.docx/.doc) files
-    TextLoader,     # Reads plain .txt files
+    PyPDFLoader,     # Extracts text + page numbers from PDF files
+    Docx2txtLoader,  # Extracts text from Word .docx / .doc files
+    TextLoader,      # Reads plain .txt files with a specified encoding
 )
 
 from langchain_community.embeddings import FastEmbedEmbeddings
-# ↑ Converts text into a list of numbers (a "vector") that captures its meaning.
-#   Similar sentences produce similar vectors. Runs locally via ONNX — no internet needed.
+# Runs a small local ONNX model (BAAI/bge-small-en-v1.5, ~100MB) to convert
+# text into a list of ~384 numbers called a "vector" or "embedding".
+# Vectors capture MEANING — "dog" and "puppy" will have similar vectors.
+# Runs fully offline inside the pod; no API key needed.
 
 from langchain_chroma import Chroma
-# ↑ ChromaDB is a vector database. It stores the embeddings produced above and
-#   lets us search for the most semantically similar chunks to a given query.
+# ChromaDB is our vector database.
+# It stores (text, vector, metadata) for every chunk so we can later search
+# for the chunks most similar to a user's question using vector math.
 
 from langchain_ollama import OllamaLLM
-# ↑ A LangChain wrapper around Ollama's local LLM server (phi3.5 in our case).
-#   Used for the non-streaming /query path.
+# A LangChain wrapper that lets us use Ollama as the LLM backend.
+# Used in the non-streaming /query path via the RetrievalQA chain.
 
 from langchain.chains import RetrievalQA
-# ↑ A pre-built LangChain "chain" that wires together: retriever → prompt → LLM.
-#   When invoked, it automatically fetches relevant chunks and feeds them to the model.
+# A pre-built LangChain "chain" — a fixed sequence of steps:
+#   1. Retriever fetches relevant chunks from ChromaDB.
+#   2. PromptTemplate inserts those chunks into the prompt.
+#   3. LLM reads the filled prompt and generates an answer.
 
 from langchain.prompts import PromptTemplate
-# ↑ A template string with named placeholders ({context}, {question}) that LangChain
-#   fills in before sending to the LLM.
+# A string template with {placeholders} that LangChain fills in at query time.
+# Separating the template from the code makes it easy to tune without touching logic.
 
-from config import settings  # Our app's configuration (model names, paths, chunk sizes, etc.)
+from config import settings  # Our app's settings loaded from environment variables
 
-# Set up a logger for this module. Log messages will appear in `kubectl logs`.
+# logging.getLogger(__name__) creates a logger named after this file ("rag_engine").
+# Every logger.info("...") call writes a timestamped line to stdout,
+# visible via `kubectl logs -n ai-stack deploy/rag-api`.
 logger = logging.getLogger(__name__)
 
-# The file types this app knows how to read and index.
+# A Python SET of file extensions we can handle.
+# Sets use {} and are unordered — optimised for fast "is X in this set?" checks.
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt"}
 
-# This is the instruction we give to the LLM for every question.
-# {context} will be replaced with the retrieved document chunks.
-# {question} will be replaced with the user's actual question.
-# Keeping the instruction simple and direct works best with smaller models.
+# Triple-quoted strings (""") span multiple lines.
+# {context} and {question} are placeholders — str.format() replaces them later.
+# This is the exact text sent to the LLM before every answer.
 PROMPT_TEMPLATE = """Use the context below to answer the question. Be direct and helpful. Summarize the relevant information clearly.
 
 Context:
@@ -80,112 +170,141 @@ Question: {question}
 Answer:"""
 
 
+# =============================================================================
+# FUNCTION: _get_loader
+# =============================================================================
+# A FUNCTION is a named, reusable block of code.
+# `def` starts the definition. `_get_loader` is the name.
+# `file_path: str` is a parameter (input). `: str` is a type hint (it's a string).
+# The function runs when you CALL it: _get_loader("/data/docs/resume.pdf")
+#
+# The leading underscore (_) means "private helper — only used inside this file".
+# =============================================================================
+
 def _get_loader(file_path: str):
     """
-    Returns the right LangChain document loader based on the file extension.
+    Given a file path, return the correct LangChain loader for that file type.
 
     Why do we need different loaders?
-    - PDFs store text in a binary format with page metadata.
-    - DOCX files are ZIP archives containing XML.
-    - TXT files are just plain text.
-    Each loader knows how to extract raw text from its specific format.
+      PDFs are binary files with internal page structure.
+      DOCX files are ZIP archives of XML — you can't just read the bytes.
+      TXT files are plain text — the simplest case.
+    Each loader knows the internal format of its file type and extracts clean text.
 
-    Returns None if the file type is not supported.
+    Returns None for unsupported types — the caller decides what to do.
     """
-    ext = Path(file_path).suffix.lower()  # e.g. ".pdf", ".docx", ".txt"
+    # Path(file_path).suffix gives the file extension including the dot.
+    # .lower() normalises "PDF", "pdf", "Pdf" → all become ".pdf".
+    ext = Path(file_path).suffix.lower()
 
+    # if / elif / else: check conditions in order, run the first matching block.
     if ext == ".pdf":
-        return PyPDFLoader(file_path)
+        return PyPDFLoader(file_path)      # Returns a loader object, not text yet
     elif ext in {".docx", ".doc"}:
         return Docx2txtLoader(file_path)
     elif ext == ".txt":
         return TextLoader(file_path, encoding="utf-8")
 
-    return None  # Unsupported type — caller handles this
+    return None  # None is Python's "nothing" value — means no loader found
 
+
+# =============================================================================
+# CLASS: RAGEngine
+# =============================================================================
+# A CLASS is a blueprint for objects. `class RAGEngine:` defines the blueprint.
+# `rag = RAGEngine()` creates one concrete object from that blueprint.
+#
+# Why a class instead of plain functions?
+#   We need to keep several expensive objects alive for the whole app lifetime:
+#   the embedding model, the ChromaDB connection, the HTTP client, the LLM.
+#   A class groups them together under one variable (rag) and lets every
+#   method share them via `self`.
+#
+# All methods (functions inside a class) receive `self` as their first argument.
+# `self` is the object itself — it's how methods access each other's data.
+# =============================================================================
 
 class RAGEngine:
-    """
-    The central class that manages the entire RAG pipeline.
 
-    Responsibilities:
-    - Hold all the shared components (embeddings model, vector store, LLM, retriever).
-    - Ingest documents (split → embed → store in ChromaDB).
-    - Answer questions (retrieve relevant chunks → build prompt → call LLM).
-    """
+    # =========================================================================
+    # METHOD: __init__  (constructor)
+    # =========================================================================
+    # __init__ is a SPECIAL METHOD — Python calls it automatically when you
+    # write `RAGEngine()`. It runs once at startup to set everything up.
+    # Think of it as the wiring phase: connect all the components before
+    # any user traffic arrives.
+    #
+    # Everything assigned to `self.something` here persists for the entire
+    # lifetime of the object and is accessible from every other method.
+    # =========================================================================
 
     def __init__(self):
-        """
-        Called once when the app starts up. Creates and connects all components.
-        Think of this as the "wiring" phase — nothing is processed yet.
-        """
+        """One-time setup: creates directories, connects to ChromaDB, loads models."""
 
-        # Create the storage directories on disk if they don't already exist.
-        # exist_ok=True means: don't raise an error if the folder is already there.
+        # os.makedirs creates a folder (and any missing parent folders).
+        # exist_ok=True: don't raise an error if the folder already exists.
         os.makedirs(settings.chroma_persist_dir, exist_ok=True)
         os.makedirs(settings.documents_dir, exist_ok=True)
 
-        # --- HTTP Client -------------------------------------------------
+        # ── HTTP Client ──────────────────────────────────────────────────────
         # httpx.AsyncClient is a persistent HTTP connection pool.
-        # Instead of opening a new TCP connection to Ollama for every request
-        # (which adds ~100ms overhead), we reuse the same connection.
-        # timeout=600s: LLM responses on CPU can be slow — don't give up early.
-        # max_keepalive_connections=2: keep at most 2 idle connections alive.
+        #
+        # WHY PERSISTENT?
+        # Opening a TCP connection involves a "handshake" (~100ms).
+        # If we created a new client for every Ollama request, we'd waste 100ms
+        # every single time. A persistent client reuses the same connection.
+        #
+        # timeout=600s: LLM responses on CPU can be very slow — don't give up.
+        # max_keepalive_connections=2: keep at most 2 idle connections warm.
         self._http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(600.0),
             limits=httpx.Limits(max_keepalive_connections=2, max_connections=5),
         )
 
-        # --- Embeddings Model --------------------------------------------
-        # FastEmbedEmbeddings runs a small ONNX model (BAAI/bge-small-en-v1.5)
-        # locally inside the pod to convert text → vectors.
-        # No GPU needed. ~100MB model loaded once at startup.
-        # cache_dir: where to store the downloaded ONNX model files on disk.
+        # ── Embeddings Model ─────────────────────────────────────────────────
+        # This loads a ~100MB ONNX model into RAM once.
+        # Every time we ingest a chunk or search for similar chunks, this model
+        # converts the text → a list of 384 numbers (the embedding vector).
+        # cache_dir tells it where to store the model files on disk.
         self._embeddings = FastEmbedEmbeddings(
             model_name=settings.embedding_model,
             cache_dir=os.environ.get("FASTEMBED_CACHE_PATH"),
         )
 
-        # --- Vector Store (ChromaDB) -------------------------------------
-        # Chroma is our vector database. It saves embeddings to disk so they
-        # survive pod restarts. On startup it loads any previously stored data.
+        # ── Vector Store (ChromaDB) ──────────────────────────────────────────
+        # ChromaDB opens (or creates) a database at persist_directory.
+        # All previously ingested chunks are loaded from disk automatically.
         #
-        # persist_directory: where ChromaDB stores its files on the hostPath volume.
-        # embedding_function: the model above — Chroma calls it when you add documents.
-        # collection_name: think of this like a table name inside ChromaDB.
+        # persist_directory: the folder on the hostPath volume (/home/pradyumna/rag/chroma)
+        # embedding_function: ChromaDB calls _embeddings.embed() internally
+        #                     when you add or query documents.
+        # collection_name: like a table name — groups related documents together.
         self._vectorstore = Chroma(
             persist_directory=settings.chroma_persist_dir,
             embedding_function=self._embeddings,
             collection_name="rag_documents",
         )
 
-        # --- Text Splitter -----------------------------------------------
-        # LLMs have a limited context window (can only read so many tokens at once).
-        # We can't feed an entire 50-page PDF to the model, so we split it into
-        # small overlapping chunks first.
+        # ── Text Splitter ────────────────────────────────────────────────────
+        # We cannot feed an entire PDF to the LLM — its context window has limits.
+        # This splitter cuts documents into small overlapping pieces.
         #
-        # chunk_size=300:   each chunk is at most 300 characters long.
-        # chunk_overlap=50: the last 50 chars of one chunk appear at the start
-        #                   of the next. This avoids cutting a sentence in half
-        #                   at a chunk boundary and losing context.
-        #
-        # "Recursive" means it tries to split on paragraph breaks first,
-        # then sentences, then words — preferring natural boundaries.
+        # chunk_size=300:   max characters per chunk (~60-70 words)
+        # chunk_overlap=50: last 50 chars of chunk N also appear at the start
+        #                   of chunk N+1, so no sentence is cut off at a boundary
         self._splitter = RecursiveCharacterTextSplitter(
             chunk_size=settings.chunk_size,
             chunk_overlap=settings.chunk_overlap,
         )
 
-        # --- LLM (Language Model) ----------------------------------------
-        # OllamaLLM connects to the Ollama server running in the ollama pod.
-        # This is used for the non-streaming /query endpoint via LangChain's chain.
+        # ── LLM (Language Model via Ollama) ──────────────────────────────────
+        # OllamaLLM wraps the HTTP calls to Ollama's /api/generate endpoint.
+        # This is used ONLY for the non-streaming /query path through LangChain.
+        # The streaming path calls Ollama directly via httpx (see astream_query).
         #
-        # temperature=0.1: controls randomness. 0 = deterministic, 1 = very random.
-        #                  Low temperature means the model sticks to factual answers.
-        # num_ctx=2048:    the context window size in tokens. Larger = more text fits
-        #                  in the prompt, but generation gets slower.
-        # num_predict=200: stop generating after 200 tokens (~150 words). Keeps
-        #                  responses short and fast.
+        # temperature=0.1: near-zero randomness → consistent, factual answers
+        # num_ctx=2048:     how many tokens the model can "see" at once
+        # num_predict=200:  stop after 200 output tokens (~150 words) to keep it fast
         self._llm = OllamaLLM(
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
@@ -194,83 +313,114 @@ class RAGEngine:
             num_predict=200,
         )
 
-        # --- Retriever ---------------------------------------------------
-        # The retriever is how we search ChromaDB. Given a question, it embeds
-        # the question and finds the k most similar document chunks.
+        # ── Retriever ────────────────────────────────────────────────────────
+        # as_retriever() wraps ChromaDB in LangChain's retriever interface.
+        # When called with a question, it embeds the question and finds the
+        # k most similar chunks using cosine similarity.
         #
-        # search_type="similarity": use cosine similarity between vectors.
-        # k=retriever_top_k: how many chunks to retrieve (currently 3).
-        #   More chunks = more context for the LLM, but slower generation.
+        # search_type="similarity": compare vectors using cosine distance
+        # k=retriever_top_k:        how many chunks to return (currently 3)
         self._retriever = self._vectorstore.as_retriever(
             search_type="similarity",
             search_kwargs={"k": settings.retriever_top_k},
         )
 
-        # Build the LangChain QA chain once and reuse it for every non-streaming query.
+        # Build the LangChain QA chain once and reuse it for every /query call.
+        # _build_chain() is another method on this class — called via self.
         self._qa_chain = self._build_chain()
 
-    # -------------------------------------------------------------------------
-    # Lifecycle helpers
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # METHOD: aclose  (async)
+    # =========================================================================
+    # `async def` = this is an asynchronous method. You must `await` it.
+    # Called by FastAPI's lifespan teardown when the app is shutting down.
+    # =========================================================================
 
     async def aclose(self) -> None:
         """
-        Cleanly close the HTTP client when the app shuts down.
-        Called from FastAPI's lifespan teardown. Releases the TCP connections
-        to Ollama so the OS doesn't leave sockets in TIME_WAIT state.
+        Gracefully close the persistent HTTP client on shutdown.
+
+        `-> None` means this function returns nothing (like `void` in Java/C).
+        Without this, the OS would see open TCP connections and wait for them
+        to time out (up to several minutes) before the pod fully terminates.
         """
         await self._http_client.aclose()
 
+    # =========================================================================
+    # METHOD: prewarm  (async)
+    # =========================================================================
+    # `async def` = must be awaited. Uses `await` internally when making the
+    # HTTP call to Ollama so it doesn't block the event loop.
+    # =========================================================================
+
     async def prewarm(self) -> None:
         """
-        Sends a tiny dummy request to Ollama right after startup.
+        Sends a 1-token dummy request to Ollama at startup.
 
-        Why? Ollama loads the model into RAM only on the first request.
-        Loading phi3.5 (~2.2GB) takes 10–20 seconds. By sending a 1-token
-        request at startup, we pay this cost once so the first real user
-        query feels instant instead of timing out.
+        WHY?
+        Ollama only loads a model into RAM when the FIRST request arrives.
+        Loading phi3.5 (2.2GB) takes 10–20 seconds. Without pre-warming, the
+        first real user request would time out or feel very slow.
+        Pre-warming pays that cost at startup, invisibly to the user.
+
+        try / except:
+          `try` runs the code. If any error occurs, Python jumps to `except`.
+          We use it here because if Ollama isn't ready yet (still starting up),
+          we don't want to crash the whole app — just log a warning and move on.
         """
         try:
             url = settings.ollama_base_url.rstrip("/") + "/api/generate"
+            # await pauses THIS coroutine until the HTTP response comes back,
+            # but lets other FastAPI requests run in the meantime.
             await self._http_client.post(url, json={
                 "model": settings.ollama_model,
                 "prompt": "hi",
                 "stream": False,
-                # num_predict=1: generate just 1 token — enough to load the model.
-                # num_ctx=2048: match the context size we use for real queries so
-                #               Ollama doesn't have to reload the model later.
-                "options": {"num_predict": 1, "num_ctx": 2048},
+                "options": {
+                    "num_predict": 1,    # Generate only 1 token — just enough to load the model
+                    "num_ctx": 2048,     # Use the same context size as real queries so Ollama
+                                         # doesn't have to reload the model later
+                },
             })
             logger.info("Model pre-warm complete")
         except Exception as exc:
-            # Non-fatal: if Ollama isn't ready yet the first user query will
-            # just be slower. Don't crash the app over this.
+            # `exc` holds the error object. `%s` formats it as a string in the log.
             logger.warning("Model pre-warm failed (non-fatal): %s", exc)
 
-    # -------------------------------------------------------------------------
-    # Chain builder
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # METHOD: _build_chain  (private helper)
+    # =========================================================================
+    # Regular `def` (not async) — runs synchronously and returns immediately.
+    # Called once in __init__, result stored in self._qa_chain.
+    # Return type hint `-> RetrievalQA` documents what the function returns.
+    # =========================================================================
 
     def _build_chain(self) -> RetrievalQA:
         """
-        Assembles the LangChain RetrievalQA chain used by the /query endpoint.
+        Builds and returns the LangChain RetrievalQA chain.
 
-        What is a "chain"?
-        A chain is a sequence of steps that run in order. This one does:
-          Step 1 — Retriever fetches the top-k relevant chunks from ChromaDB.
-          Step 2 — PromptTemplate fills {context} and {question} with real values.
-          Step 3 — LLM reads the filled-in prompt and generates an answer.
+        WHAT IS A CHAIN?
+        A chain is a pipeline where the output of one step becomes the input
+        of the next. This chain has three steps:
+          Step 1 — self._retriever  → takes a question, returns top-k chunks
+          Step 2 — PromptTemplate   → inserts chunks into the prompt template
+          Step 3 — self._llm        → reads the filled prompt, returns an answer
 
-        chain_type="stuff": the simplest strategy — all retrieved chunks are
-        "stuffed" into a single prompt. Good when chunks are small (as ours are).
+        chain_type="stuff": all chunks are "stuffed" into one prompt string.
+        This is the simplest and fastest strategy — works well for small chunks.
 
-        return_source_documents=True: the chain also returns which chunks it
-        used, so we can show the user "Sources: resume.pdf page 2".
+        return_source_documents=True: the chain also returns WHICH chunks it used
+        so we can display "Sources: resume.pdf, page 2" to the user.
         """
+        # PromptTemplate compiles the PROMPT_TEMPLATE string and registers
+        # which variable names ({context}, {question}) need to be filled in.
         prompt = PromptTemplate(
             template=PROMPT_TEMPLATE,
             input_variables=["context", "question"],
         )
+
+        # from_chain_type is a class method (factory) that constructs the chain.
+        # We pass all three components: LLM, retriever, and prompt.
         return RetrievalQA.from_chain_type(
             llm=self._llm,
             chain_type="stuff",
@@ -279,146 +429,212 @@ class RAGEngine:
             chain_type_kwargs={"prompt": prompt},
         )
 
-    # -------------------------------------------------------------------------
-    # Document ingestion
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # METHOD: ingest_file
+    # =========================================================================
+    # Regular synchronous method. Blocking — takes several seconds for large
+    # files. Called in a background thread (run_in_executor) from async code
+    # so it doesn't freeze the event loop.
+    # =========================================================================
 
     def ingest_file(self, file_path: str) -> int:
         """
-        Reads a document, splits it into chunks, embeds each chunk, and stores
-        them in ChromaDB. Returns the number of chunks created.
+        Full ingestion pipeline for one file. Returns the number of chunks stored.
 
-        This is the pipeline:
-          File on disk
-            → loader extracts raw text
-            → splitter cuts it into small overlapping chunks
-            → ChromaDB embeds each chunk and stores (text + vector + metadata)
+        Steps:
+          1. Pick the right loader for the file type.
+          2. Load raw text from the file.
+          3. Split text into small overlapping chunks.
+          4. Delete any existing chunks for this file (handles re-uploads).
+          5. Generate deterministic IDs for each chunk.
+          6. Embed and store all chunks in ChromaDB.
 
-        Idempotent: safe to call multiple times on the same file.
-        We delete the old chunks first so re-uploading a file doesn't
-        create duplicates in the database.
+        IDEMPOTENT means: safe to call multiple times with the same input —
+        the result is always the same, no duplicates created.
         """
-        # Pick the right loader for this file type.
+        # Call the helper function defined at the top of this file.
+        # If it returns None the file type is unsupported → raise an error.
         loader = _get_loader(file_path)
         if loader is None:
+            # `raise` throws an exception that stops execution and bubbles up
+            # to the caller, which can catch it with try/except.
+            # ValueError is a built-in Python exception for invalid input.
             raise ValueError(f"Unsupported file type: {Path(file_path).suffix}")
 
-        # loader.load() reads the file and returns a list of LangChain Document
-        # objects. Each Document has .page_content (the text) and .metadata
-        # (e.g. {"source": "/data/documents/resume.pdf", "page": 0}).
+        # loader.load() reads the file and returns a Python LIST of LangChain
+        # Document objects. Each Document has two fields:
+        #   .page_content  — the extracted text
+        #   .metadata      — dict with info like {"source": "/data/...", "page": 0}
         docs = loader.load()
 
-        # Split each Document into smaller chunks. A 10-page PDF might become
-        # 60+ chunks depending on chunk_size.
+        # Split each Document into chunks.
+        # Input:  [Document(page_content="very long text...")]
+        # Output: [Document(page_content="chunk 1..."),
+        #          Document(page_content="chunk 2..."), ...]
         chunks = self._splitter.split_documents(docs)
 
-        # Delete any existing chunks for this file so re-uploading is clean.
-        # The "source" metadata field stores the original file path, which is
-        # what we use to identify which chunks belong to which file.
+        # DELETE old chunks for this file before adding new ones.
+        # WHY? If we re-upload a file, we'd get duplicate entries in ChromaDB
+        # without this step. The "source" metadata field is how we identify
+        # which chunks belong to which file.
+        # try/except: if no chunks exist yet for this file, delete is a no-op.
         try:
             self._vectorstore._collection.delete(where={"source": file_path})
         except Exception:
-            pass  # If there were no existing chunks, the delete is a no-op
+            pass  # `pass` means "do nothing" — ignore the error and continue
 
-        # Generate deterministic (stable) IDs for each chunk.
-        # Why? ChromaDB needs a unique ID per chunk. If we used random IDs,
-        # re-uploading the same file would create duplicate entries.
-        # Using md5(file_path) + chunk_index means the same file always produces
-        # the same IDs, so ChromaDB upserts instead of appending.
+        # DETERMINISTIC IDs: generate stable, predictable IDs for every chunk.
+        # hashlib.md5(file_path.encode()).hexdigest() produces a 32-char hex
+        # string like "a1b2c3..." that is ALWAYS the same for the same file path.
+        # We append _0, _1, _2... for each chunk index.
+        # Result: ["a1b2c3_0", "a1b2c3_1", "a1b2c3_2", ...]
+        #
+        # WHY DETERMINISTIC?
+        # ChromaDB upserts when the same ID is inserted twice (update, not duplicate).
+        # Random IDs would create duplicates every time the file is re-ingested.
         base = hashlib.md5(file_path.encode()).hexdigest()
+        # List comprehension: a compact way to build a list.
+        # [f"{base}_{i}" for i in range(len(chunks))] is the same as:
+        #   ids = []
+        #   for i in range(len(chunks)):
+        #       ids.append(f"{base}_{i}")
         ids = [f"{base}_{i}" for i in range(len(chunks))]
 
-        # Store all chunks in ChromaDB. Chroma automatically calls the
-        # embedding function on each chunk's text and saves the vector.
+        # add_documents stores each chunk: it calls the embedding model on each
+        # chunk's text, then saves (text, vector, metadata, id) to ChromaDB.
         self._vectorstore.add_documents(chunks, ids=ids)
 
+        # %d and %s are format placeholders for the logger — faster than f-strings.
         logger.info("Ingested %d chunks from %s", len(chunks), file_path)
+
+        # `return` sends a value back to whoever called this function.
+        # The caller (ingest_directory, background task) uses it to report results.
         return len(chunks)
+
+    # =========================================================================
+    # METHOD: ingest_directory
+    # =========================================================================
+    # Loops over every file in a folder and calls ingest_file() on each one.
+    # Returns a dict so the caller knows which files succeeded or failed.
+    # =========================================================================
 
     def ingest_directory(self, directory: str) -> dict:
         """
-        Ingests every supported document found anywhere inside `directory`.
-        rglob("*") walks all subdirectories recursively.
-        Returns a dict mapping filename → result so the caller knows what happened.
+        Ingest every supported file found anywhere inside `directory`.
+
+        rglob("*") walks the entire folder tree recursively (like `find` in bash).
+        Returns: {"resume.pdf": {"chunks": 31, "status": "ok"}, ...}
         """
+        # {} creates an empty Python DICTIONARY — key/value pairs.
         results = {}
+
         for path in Path(directory).rglob("*"):
+            # path.suffix gives the extension, .lower() normalises case
             if path.suffix.lower() in SUPPORTED_EXTENSIONS:
                 try:
+                    # str(path) converts the Path object to a plain string
                     count = self.ingest_file(str(path))
+                    # path.name gives just the filename, not the full path
                     results[path.name] = {"chunks": count, "status": "ok"}
                 except Exception as exc:
                     logger.error("Failed to ingest %s: %s", path, exc)
                     results[path.name] = {"status": "error", "error": str(exc)}
+
         return results
 
-    # -------------------------------------------------------------------------
-    # Querying
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # METHOD: query  (synchronous)
+    # =========================================================================
+    # Regular `def` — blocks until the LLM finishes generating the full answer.
+    # Used by the /query REST endpoint. In async contexts it must be wrapped
+    # with run_in_executor to avoid freezing the event loop.
+    # =========================================================================
 
     def query(self, question: str) -> dict:
         """
-        Answers a question using the LangChain RetrievalQA chain (non-streaming).
+        Ask a question and get a complete answer (no streaming).
 
-        Used by the /query REST endpoint and the non-streaming OpenAI path.
-        Blocks until the full answer is generated — suitable for simple API calls
-        where the client is happy to wait.
-
-        Returns: {"answer": "...", "sources": [{"source": "path", "page": 0}, ...]}
+        Internally runs the full chain: retriever → prompt → LLM → answer.
+        Returns a dict: {"answer": "...", "sources": [...]}
         """
-        # self._qa_chain.invoke() runs all three steps: retrieve → prompt → LLM.
-        # The input key "query" is what LangChain's RetrievalQA expects.
+        # .invoke() runs the chain end-to-end.
+        # Input: {"query": "who is prajjumna"}
+        # Output: {"result": "Prajjumna is a DevOps engineer...",
+        #          "source_documents": [Document(...), ...]}
         result = self._qa_chain.invoke({"query": question})
 
-        # Deduplicate sources: the retriever may return multiple chunks from the
-        # same page of the same file. We only want to show each page once.
+        # Deduplicate sources — the retriever may return 3 chunks all from
+        # page 1 of the same PDF. We only want to show that page once.
+        # A SET automatically ignores duplicate values — we use it as a "seen" tracker.
         seen: set = set()
         unique_sources: list = []
+
         for doc in result.get("source_documents", []):
+            # .get("key", default) safely reads from a dict — returns default if missing
             src = (doc.metadata.get("source", ""), doc.metadata.get("page"))
             if src not in seen:
-                seen.add(src)
+                seen.add(src)   # Mark this (file, page) pair as already processed
                 unique_sources.append({"source": src[0], "page": src[1]})
 
+        # Return a plain Python dict — FastAPI serialises it to JSON automatically.
         return {"answer": result["result"], "sources": unique_sources}
+
+    # =========================================================================
+    # METHOD: astream_query  (async)
+    # =========================================================================
+    # `async def` means you must `await` it. It returns TWO things as a Tuple:
+    #   1. sources  — list of source dicts (known before generation starts)
+    #   2. _token_gen — an async generator that yields tokens one at a time
+    #
+    # Tuple[list, AsyncGenerator[str, None]] is the type hint:
+    #   Tuple = a fixed-length collection of values (like an immutable list)
+    #   AsyncGenerator[str, None] = an async generator that yields strings
+    # =========================================================================
 
     async def astream_query(self, question: str) -> Tuple[list, AsyncGenerator[str, None]]:
         """
-        Answers a question with token-by-token streaming (used by OpenWebUI).
+        Ask a question and stream the answer token by token.
 
-        Why streaming?
-        Generating a full answer on CPU takes 20–60 seconds. Without streaming,
-        the user stares at a blank screen until it's done. With streaming, they
-        see each word as it's generated — much better user experience.
+        WHY STREAMING?
+        phi3.5 on CPU takes 20–60 seconds to generate a full answer.
+        Without streaming, the user sees a blank screen for a minute.
+        With streaming, words appear one at a time as they're generated —
+        much better UX (same as how ChatGPT works).
 
-        How it works:
-          1. Run the retriever synchronously in a thread pool (run_in_executor)
-             because LangChain's retriever is not async-native.
-          2. Build the prompt string manually with the retrieved context.
-          3. Return (sources, async_generator). The caller iterates the generator
-             and sends each token to the client as a Server-Sent Event (SSE).
-
-        Returns a tuple of:
-          - sources: list of {"source": path, "page": number}
-          - async generator that yields one token string at a time
+        HOW IT WORKS:
+          1. Retriever finds relevant chunks (blocking → run in thread pool).
+          2. We build the prompt string manually.
+          3. We return (sources, async_generator).
+          4. The caller (main.py) iterates the generator and forwards each
+             token to the browser as a Server-Sent Event (SSE).
         """
 
-        # run_in_executor runs a blocking (sync) function in a background thread
-        # so it doesn't block the async event loop. The event loop can handle
-        # other requests while the retriever is doing its work.
+        # ── Step 1: Retrieve relevant chunks ─────────────────────────────────
+        # self._retriever.invoke() is a SYNCHRONOUS (blocking) function.
+        # Calling it directly inside an async function would FREEZE the event
+        # loop — no other requests could be served while it runs.
+        #
+        # SOLUTION: run_in_executor runs it in a background thread pool.
+        # `await` pauses this coroutine until the thread finishes, but the
+        # event loop is free to handle other requests during that time.
+        #
+        # asyncio.get_running_loop() returns the current event loop object.
+        # None as the first argument means "use the default thread pool".
         loop = asyncio.get_running_loop()
         docs = await loop.run_in_executor(None, self._retriever.invoke, question)
 
-        # Build the context string from retrieved chunks.
-        # " ".join(d.page_content.split()) collapses all whitespace (newlines,
-        # multiple spaces) inside each chunk into single spaces, saving tokens.
+        # ── Step 2: Build the prompt ──────────────────────────────────────────
+        # For each retrieved Document, collapse internal whitespace and join them.
+        # " ".join(d.page_content.split()) replaces any run of whitespace
+        # (tabs, newlines, multiple spaces) with a single space — saves tokens.
         context = "\n\n".join(" ".join(d.page_content.split()) for d in docs)
 
-        # Fill the prompt template with real context and question.
+        # str.format() replaces {context} and {question} in the template string.
         prompt_text = PROMPT_TEMPLATE.format(context=context, question=question)
 
-        # Collect unique source files from the retrieved chunks (same dedup logic
-        # as in query() above).
+        # ── Step 3: Collect sources ───────────────────────────────────────────
+        # We know the sources NOW (before generation starts), so we collect them
+        # here and return them alongside the generator.
         seen: set = set()
         sources: list = []
         for d in docs:
@@ -427,96 +643,129 @@ class RAGEngine:
                 seen.add(src)
                 sources.append({"source": src[0], "page": src[1]})
 
-        # Define the async generator as a nested function so it can close over
-        # prompt_text and sources without needing extra arguments.
+        # ── Step 4: Define the token streaming generator ─────────────────────
+        # A NESTED FUNCTION is a function defined inside another function.
+        # _token_gen is defined inside astream_query so it can automatically
+        # ACCESS prompt_text and sources from the outer scope — this is called
+        # a "closure". No need to pass them as arguments.
+        #
+        # `async def` + `yield` = ASYNC GENERATOR.
+        # An async generator is a function that yields values asynchronously.
+        # Each `yield token` pauses the function and hands a token to the caller.
+        # The caller does `async for token in _token_gen()` to receive them.
+
         async def _token_gen() -> AsyncGenerator[str, None]:
             """
-            Streams tokens from Ollama's /api/generate endpoint one at a time.
+            Streams raw tokens from Ollama's /api/generate endpoint.
 
-            Ollama's streaming API sends newline-delimited JSON, one object per line:
-              {"model":"phi3.5","response":"Hello","done":false}
-              {"model":"phi3.5","response":" world","done":false}
-              {"model":"phi3.5","response":"","done":true,"eval_count":42}
+            Ollama sends newline-delimited JSON when stream=True:
+              {"response": "Prajjumna", "done": false}
+              {"response": " is",       "done": false}
+              {"response": " a",        "done": false}
+              {"response": "",          "done": true, "eval_count": 17}
 
-            We parse each line, yield the "response" field (one or more characters),
-            and stop when "done" is true.
+            We yield each "response" value immediately so the browser sees
+            words appear in real time.
             """
             url = settings.ollama_base_url.rstrip("/") + "/api/generate"
+            # A dict literal {} creates a Python dictionary.
             payload = {
                 "model": settings.ollama_model,
                 "prompt": prompt_text,
-                "stream": True,       # Tell Ollama to stream tokens as they're generated
+                "stream": True,         # Ask Ollama to send tokens as they're generated
                 "options": {
-                    "temperature": 0.1,   # Low = more focused, less creative
-                    "num_ctx": 2048,      # Context window in tokens
-                    "num_predict": 200,   # Max tokens to generate (~150 words)
-                    "num_batch": 512,     # Tokens processed in parallel on CPU (throughput)
+                    "temperature": 0.1,     # Low randomness = consistent factual answers
+                    "num_ctx": 2048,        # Context window in tokens
+                    "num_predict": 200,     # Stop after 200 output tokens (~150 words)
+                    "num_batch": 512,       # Process 512 tokens at once (CPU throughput)
                 },
             }
             logger.info("stream_query model=%s prompt_len=%d", settings.ollama_model, len(prompt_text))
-            first_token = True
+            first_token = True  # Boolean flag to log only the very first token
 
+            # try/except: catches errors during streaming (e.g. Ollama drops the
+            # connection before sending "done"). Without this, a mid-stream error
+            # would crash the whole generator and show an error page instead of
+            # delivering the partial answer the user already received.
             try:
-                # self._http_client.stream() opens the HTTP connection and keeps
-                # it open while we read the response line by line.
-                # This is different from a normal POST where you wait for the
-                # full response body — here we read it incrementally.
+                # `async with` is the async version of `with`.
+                # self._http_client.stream() opens an HTTP connection that stays
+                # OPEN while we read the response line by line.
+                # `as resp` binds the response object to the name `resp`.
                 async with self._http_client.stream("POST", url, json=payload) as resp:
-                    async for line in resp.aiter_lines():
-                        if not line:
-                            continue  # Skip empty lines (Ollama sometimes sends them)
 
-                        # Each line is a JSON object. Parse it safely.
+                    # `async for` iterates an async iterable — each iteration
+                    # awaits the next value. resp.aiter_lines() reads one line
+                    # at a time from the HTTP response body as it arrives.
+                    async for line in resp.aiter_lines():
+
+                        if not line:
+                            continue  # `continue` skips to the next loop iteration
+
+                        # json.loads() parses a JSON string into a Python dict.
+                        # If the line isn't valid JSON, skip it.
                         try:
                             data = json.loads(line)
                         except json.JSONDecodeError:
-                            continue  # Skip any malformed lines
+                            continue
 
+                        # .get("key", default) reads from the dict safely.
+                        # If "response" key is missing, return "" (empty string).
                         token = data.get("response", "")
+
                         if token:
                             if first_token:
-                                # Log the first token so we can verify in kubectl logs
-                                # that the model is actually generating useful content.
                                 logger.info("stream_query first_token=%r", token)
                                 first_token = False
-                            # `yield` is what makes this an async generator.
-                            # Each yield sends one token back to the caller immediately.
+
+                            # ── `yield` ──────────────────────────────────────
+                            # This is what makes _token_gen an ASYNC GENERATOR.
+                            # `yield token` immediately sends this token to whoever
+                            # is iterating the generator (`async for token in gen`),
+                            # then PAUSES here until the caller asks for the next value.
+                            # No return statement — the function can yield many times.
                             yield token
 
                         if data.get("done"):
-                            # Ollama signals the end of the response with done=true.
                             logger.info("stream_query done eval_count=%s", data.get("eval_count"))
-                            break
+                            break  # `break` exits the for loop immediately
 
             except Exception as exc:
-                # Ollama sometimes closes the connection early (TransferEncodingError).
-                # We catch it here so whatever tokens already streamed are kept —
-                # the user gets a partial answer instead of an error page.
+                # Log the error but don't re-raise it.
+                # The generator simply stops, and whatever tokens were already
+                # yielded are kept — the user sees a partial answer.
                 logger.warning("stream_query connection error (partial response delivered): %s", exc)
 
-        # Return sources up-front (we know them before generation starts)
-        # and the generator object. The caller (main.py) will iterate the generator.
+        # Return both values as a TUPLE.
+        # The () around two values creates a tuple: (sources, _token_gen())
+        # Note: _token_gen() creates the generator object but does NOT start
+        # running it yet — it only starts when the caller does `async for`.
         return sources, _token_gen()
 
-    # -------------------------------------------------------------------------
-    # Utility helpers
-    # -------------------------------------------------------------------------
+    # =========================================================================
+    # METHOD: list_documents
+    # =========================================================================
 
     def list_documents(self) -> List[str]:
         """
-        Returns the filenames of all documents currently stored on disk.
-        Used by the GET /documents endpoint to show the user what's been uploaded.
+        Returns filenames of all documents on disk (not from ChromaDB).
+        List[str] type hint means: returns a list where every item is a string.
         """
-        docs = []
+        docs = []  # Start with an empty list
         for path in Path(settings.documents_dir).rglob("*"):
             if path.suffix.lower() in SUPPORTED_EXTENSIONS:
-                docs.append(path.name)
+                docs.append(path.name)  # .append() adds an item to the end of a list
         return docs
+
+    # =========================================================================
+    # METHOD: collection_count
+    # =========================================================================
 
     def collection_count(self) -> int:
         """
-        Returns the total number of chunks stored in ChromaDB.
-        Used by the /health endpoint so we can confirm documents are indexed.
-        A count of 0 means no documents have been ingested yet.
+        Returns the number of chunks currently stored in ChromaDB.
+        `-> int` means this returns a whole number (integer).
+        0 = no documents indexed yet.
+        Used by /health and the startup ingest check.
         """
         return self._vectorstore._collection.count()
