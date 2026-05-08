@@ -72,7 +72,7 @@ class RAGEngine:
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
             temperature=0.1,
-            num_ctx=1024,
+            num_ctx=2048,
             num_predict=200,
         )
         self._retriever = self._vectorstore.as_retriever(
@@ -91,7 +91,7 @@ class RAGEngine:
                 "model": settings.ollama_model,
                 "prompt": "hi",
                 "stream": False,
-                "options": {"num_predict": 1},
+                "options": {"num_predict": 1, "num_ctx": 2048},
             })
             logger.info("Model pre-warm complete")
         except Exception as exc:
