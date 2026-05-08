@@ -14,7 +14,7 @@ spec:
         app: ollama
     metadata:
       annotations:
-        deploy-version: "2"
+        deploy-version: "3"
     spec:
       initContainers:
       - name: pull-model
@@ -22,19 +22,22 @@ spec:
         command: ["/bin/sh", "-c"]
         args:
           - |
+            export OLLAMA_HOST=127.0.0.1:11434;
             TARGET="phi3.5";
             ollama serve &
             until ollama list > /dev/null 2>&1; do sleep 1; done;
+            echo "Ollama ready";
             if ollama list | grep -q "^$TARGET"; then
-              echo "Model $TARGET already present, skipping pull";
+              echo "$TARGET already present, skipping pull";
             else
               echo "Pulling $TARGET...";
               ollama pull $TARGET;
             fi;
             ollama list | awk 'NR>1 {print $1}' | grep -v "^$TARGET" | while read model; do
-              ollama rm "$model" && echo "Removed: $model";
+              echo "Removing $model...";
+              ollama rm "$model";
             done;
-            echo "Final model list:"; ollama list;
+            echo "Done:"; ollama list;
         volumeMounts:
         - name: ollama-data
           mountPath: /root/.ollama
