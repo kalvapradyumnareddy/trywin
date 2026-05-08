@@ -21,11 +21,16 @@ spec:
         command: ["/bin/sh", "-c"]
         args:
           - |
-            echo "Starting temporary Ollama server...";
-            ollama serve &   # start server in background
-            sleep 5;         # wait for server to be ready
-            ollama pull llama3.2:1b;
-            echo "Model llama3.2:1b pulled successfully";
+            TARGET="llama3.2:1b";
+            ollama serve &
+            sleep 5;
+            if ollama list | grep -q "^$TARGET"; then
+              echo "Model $TARGET already present, skipping pull";
+            else
+              ollama pull $TARGET;
+              echo "Model $TARGET pulled successfully";
+            fi;
+            ollama list | awk 'NR>1 {print $1}' | grep -v "^$TARGET" | xargs -r -I{} sh -c 'ollama rm "{}" && echo "Removed old model: {}"';
         volumeMounts:
         - name: ollama-data
           mountPath: /root/.ollama
