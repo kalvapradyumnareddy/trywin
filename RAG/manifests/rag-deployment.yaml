@@ -33,6 +33,13 @@ spec:
         envFrom:
         - configMapRef:
             name: rag-config
+        env:
+        - name: OMP_NUM_THREADS
+          value: "2"
+        - name: MKL_NUM_THREADS
+          value: "2"
+        - name: ANONYMIZED_TELEMETRY
+          value: "false"
 
         volumeMounts:
         - name: rag-data
@@ -51,7 +58,7 @@ spec:
             path: /health
             port: 8000
           initialDelaySeconds: 30
-          periodSeconds: 15
+          periodSeconds: 30
           failureThreshold: 5
 
         livenessProbe:
@@ -59,7 +66,7 @@ spec:
             path: /health
             port: 8000
           initialDelaySeconds: 60
-          periodSeconds: 30
+          periodSeconds: 60
           failureThreshold: 3
 
       volumes:

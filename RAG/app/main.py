@@ -34,6 +34,7 @@ async def lifespan(app: FastAPI):
     logger.info("RAG engine ready. Vector store has %d chunks.", rag.collection_count())
     asyncio.create_task(rag.prewarm())
     yield
+    await rag.aclose()
     logger.info("Shutting down RAG engine.")
 
 

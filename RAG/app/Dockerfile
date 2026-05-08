@@ -24,9 +24,13 @@ COPY --from=builder /install /usr/local
 COPY --from=builder /model-cache /model-cache
 
 ENV FASTEMBED_CACHE_PATH=/model-cache
+# Skip assert/docstring bytecode; slightly faster import and smaller .pyc files
+ENV PYTHONOPTIMIZE=1
 
 COPY . .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# uvloop: C-based event loop, 2-4x faster than default asyncio
+# httptools: C-based HTTP parser, faster request parsing
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--loop", "uvloop", "--http", "httptools"]

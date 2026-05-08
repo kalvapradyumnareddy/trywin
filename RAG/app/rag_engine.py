@@ -55,6 +55,13 @@ class RAGEngine:
 
         self._cache: OrderedDict = OrderedDict()
 
+        # Persistent HTTP client — reuses TCP connection to Ollama across all
+        # requests instead of setting up a new socket every query.
+        self._http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(600.0),
+            limits=httpx.Limits(max_keepalive_connections=2, max_connections=5),
+        )
+
         self._embeddings = FastEmbedEmbeddings(
             model_name=settings.embedding_model,
             cache_dir=os.environ.get("FASTEMBED_CACHE_PATH"),
@@ -97,17 +104,19 @@ class RAGEngine:
     # Model pre-warm
     # ------------------------------------------------------------------
 
+    async def aclose(self) -> None:
+        await self._http_client.aclose()
+
     async def prewarm(self) -> None:
         """Send a 1-token prompt to load the model into Ollama's memory."""
         try:
             url = settings.ollama_base_url.rstrip("/") + "/api/generate"
-            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
-                await client.post(url, json={
-                    "model": settings.ollama_model,
-                    "prompt": "hi",
-                    "stream": False,
-                    "options": {"num_predict": 1},
-                })
+            await self._http_client.post(url, json={
+                "model": settings.ollama_model,
+                "prompt": "hi",
+                "stream": False,
+                "options": {"num_predict": 1},
+            })
             logger.info("Model pre-warm complete")
         except Exception as exc:
             logger.warning("Model pre-warm failed (non-fatal): %s", exc)
@@ -212,7 +221,8 @@ class RAGEngine:
         loop = asyncio.get_running_loop()
         docs = await loop.run_in_executor(None, self._retriever.invoke, question)
 
-        context = "\n\n".join(d.page_content for d in docs)
+        # Collapse whitespace/newlines inside each chunk to save prompt tokens.
+        context = "\n\n".join(" ".join(d.page_content.split()) for d in docs)
         prompt_text = PROMPT_TEMPLATE.format(context=context, question=question)
 
         seen: set = set()
@@ -231,20 +241,24 @@ class RAGEngine:
                 "model": settings.ollama_model,
                 "prompt": prompt_text,
                 "stream": True,
-                "options": {"temperature": 0.1, "num_ctx": 512, "num_predict": 150},
+                "options": {
+                    "temperature": 0.1,
+                    "num_ctx": 512,
+                    "num_predict": 150,
+                    "num_batch": 512,  # process prompt tokens in one pass
+                },
             }
-            async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
-                async with client.stream("POST", url, json=payload) as resp:
-                    async for line in resp.aiter_lines():
-                        if not line:
-                            continue
-                        data = json.loads(line)
-                        token = data.get("response", "")
-                        if token:
-                            buf.append(token)
-                            yield token
-                        if data.get("done"):
-                            break
+            async with self._http_client.stream("POST", url, json=payload) as resp:
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    token = data.get("response", "")
+                    if token:
+                        buf.append(token)
+                        yield token
+                    if data.get("done"):
+                        break
             self._store_cache(ckey, {"answer": "".join(buf), "sources": sources})
 
         return sources, _token_gen()
