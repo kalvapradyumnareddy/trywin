@@ -183,20 +183,26 @@ class RAGEngine:
             }
             logger.info("stream_query model=%s prompt_len=%d", settings.ollama_model, len(prompt_text))
             first_token = True
-            async with self._http_client.stream("POST", url, json=payload) as resp:
-                async for line in resp.aiter_lines():
-                    if not line:
-                        continue
-                    data = json.loads(line)
-                    token = data.get("response", "")
-                    if token:
-                        if first_token:
-                            logger.info("stream_query first_token=%r", token)
-                            first_token = False
-                        yield token
-                    if data.get("done"):
-                        logger.info("stream_query done eval_count=%s", data.get("eval_count"))
-                        break
+            try:
+                async with self._http_client.stream("POST", url, json=payload) as resp:
+                    async for line in resp.aiter_lines():
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        token = data.get("response", "")
+                        if token:
+                            if first_token:
+                                logger.info("stream_query first_token=%r", token)
+                                first_token = False
+                            yield token
+                        if data.get("done"):
+                            logger.info("stream_query done eval_count=%s", data.get("eval_count"))
+                            break
+            except Exception as exc:
+                logger.warning("stream_query connection error (partial response delivered): %s", exc)
 
         return sources, _token_gen()
 
