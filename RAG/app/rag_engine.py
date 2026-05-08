@@ -53,7 +53,10 @@ class RAGEngine:
         os.makedirs(settings.chroma_persist_dir, exist_ok=True)
         os.makedirs(settings.documents_dir, exist_ok=True)
 
+        # Cache lives next to chroma on the hostPath so it survives pod restarts.
+        self._cache_path = Path(settings.chroma_persist_dir).parent / "query_cache.json"
         self._cache: OrderedDict = OrderedDict()
+        self._load_persistent_cache()
 
         # Persistent HTTP client — reuses TCP connection to Ollama across all
         # requests instead of setting up a new socket every query.
@@ -79,8 +82,8 @@ class RAGEngine:
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
             temperature=0.1,
-            num_ctx=512,
-            num_predict=150,
+            num_ctx=256,
+            num_predict=100,
         )
         self._retriever = self._vectorstore.as_retriever(
             search_type="similarity",
@@ -95,10 +98,26 @@ class RAGEngine:
     def _cache_key(self, question: str) -> str:
         return hashlib.md5(question.strip().lower().encode()).hexdigest()
 
+    def _load_persistent_cache(self) -> None:
+        try:
+            if self._cache_path.exists():
+                raw = json.loads(self._cache_path.read_text())
+                self._cache = OrderedDict(list(raw.items())[-_CACHE_MAX:])
+                logger.info("Loaded %d cached answers from disk", len(self._cache))
+        except Exception as exc:
+            logger.warning("Could not load cache from disk: %s", exc)
+
     def _store_cache(self, key: str, result: dict) -> None:
         if len(self._cache) >= _CACHE_MAX:
             self._cache.popitem(last=False)
         self._cache[key] = result
+        # Atomic write: temp file → rename so cache is never half-written.
+        try:
+            tmp = Path(str(self._cache_path) + ".tmp")
+            tmp.write_text(json.dumps(dict(self._cache), ensure_ascii=False))
+            tmp.replace(self._cache_path)
+        except Exception as exc:
+            logger.warning("Cache persist failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Model pre-warm
@@ -165,6 +184,11 @@ class RAGEngine:
 
         logger.info("Ingested %d chunks from %s", len(chunks), file_path)
         self._cache.clear()
+        # Wipe persisted cache — new data means old answers may be stale.
+        try:
+            self._cache_path.unlink(missing_ok=True)
+        except Exception:
+            pass
         return len(chunks)
 
     def ingest_directory(self, directory: str) -> dict:
@@ -243,9 +267,9 @@ class RAGEngine:
                 "stream": True,
                 "options": {
                     "temperature": 0.1,
-                    "num_ctx": 512,
-                    "num_predict": 150,
-                    "num_batch": 512,  # process prompt tokens in one pass
+                    "num_ctx": 256,
+                    "num_predict": 100,
+                    "num_batch": 256,
                 },
             }
             async with self._http_client.stream("POST", url, json=payload) as resp:

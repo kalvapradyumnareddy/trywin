@@ -68,6 +68,15 @@ def list_documents():
     return {"documents": rag.list_documents()}
 
 
+async def _ingest_background(file_path: str) -> None:
+    loop = asyncio.get_running_loop()
+    try:
+        n = await loop.run_in_executor(None, rag.ingest_file, file_path)
+        logger.info("Background ingest done: %d chunks from %s", n, file_path)
+    except Exception as exc:
+        logger.error("Background ingest failed for %s: %s", file_path, exc)
+
+
 @app.post("/ingest/upload")
 async def upload_and_ingest(
     background_tasks: BackgroundTasks,
@@ -87,13 +96,9 @@ async def upload_and_ingest(
     with open(dest, "wb") as f:
         shutil.copyfileobj(file.file, f)
 
-    try:
-        chunks = rag.ingest_file(str(dest))
-    except Exception as exc:
-        dest.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=str(exc))
-
-    return {"filename": file.filename, "chunks_ingested": chunks}
+    # Return immediately — embedding + indexing runs after the response is sent.
+    background_tasks.add_task(_ingest_background, str(dest))
+    return {"filename": file.filename, "status": "uploaded", "message": "Indexing in background"}
 
 
 @app.post("/ingest/directory")
