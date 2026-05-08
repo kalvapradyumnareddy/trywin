@@ -15,7 +15,7 @@ spec:
       labels:
         app: rag-api
       annotations:
-        deploy-version: "5"
+        deploy-version: "6"
     spec:
       initContainers:
       - name: init-documents-dir

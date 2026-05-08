@@ -181,6 +181,8 @@ class RAGEngine:
                     "num_batch": 512,
                 },
             }
+            logger.info("stream_query model=%s prompt_len=%d", settings.ollama_model, len(prompt_text))
+            first_token = True
             async with self._http_client.stream("POST", url, json=payload) as resp:
                 async for line in resp.aiter_lines():
                     if not line:
@@ -188,8 +190,12 @@ class RAGEngine:
                     data = json.loads(line)
                     token = data.get("response", "")
                     if token:
+                        if first_token:
+                            logger.info("stream_query first_token=%r", token)
+                            first_token = False
                         yield token
                     if data.get("done"):
+                        logger.info("stream_query done eval_count=%s", data.get("eval_count"))
                         break
 
         return sources, _token_gen()
