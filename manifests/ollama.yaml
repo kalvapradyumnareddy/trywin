@@ -12,9 +12,10 @@ spec:
     metadata:
       labels:
         app: ollama
+    metadata:
+      annotations:
+        deploy-version: "2"
     spec:
-
-   
       initContainers:
       - name: pull-model
         image: ollama/ollama:latest
@@ -23,14 +24,17 @@ spec:
           - |
             TARGET="phi3.5";
             ollama serve &
-            sleep 5;
+            until ollama list > /dev/null 2>&1; do sleep 1; done;
             if ollama list | grep -q "^$TARGET"; then
               echo "Model $TARGET already present, skipping pull";
             else
+              echo "Pulling $TARGET...";
               ollama pull $TARGET;
-              echo "Model $TARGET pulled successfully";
             fi;
-            ollama list | awk 'NR>1 {print $1}' | grep -v "^$TARGET" | xargs -r -I{} sh -c 'ollama rm "{}" && echo "Removed old model: {}"';
+            ollama list | awk 'NR>1 {print $1}' | grep -v "^$TARGET" | while read model; do
+              ollama rm "$model" && echo "Removed: $model";
+            done;
+            echo "Final model list:"; ollama list;
         volumeMounts:
         - name: ollama-data
           mountPath: /root/.ollama
