@@ -68,6 +68,12 @@ class RAGEngine:
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
             temperature=0.1,
+            num_ctx=1024,
+            num_predict=256,
+        )
+        self._retriever = self._vectorstore.as_retriever(
+            search_type="similarity",
+            search_kwargs={"k": settings.retriever_top_k},
         )
         self._qa_chain = self._build_chain()
 
@@ -76,14 +82,10 @@ class RAGEngine:
             template=PROMPT_TEMPLATE,
             input_variables=["context", "question"],
         )
-        retriever = self._vectorstore.as_retriever(
-            search_type="similarity",
-            search_kwargs={"k": settings.retriever_top_k},
-        )
         return RetrievalQA.from_chain_type(
             llm=self._llm,
             chain_type="stuff",
-            retriever=retriever,
+            retriever=self._retriever,
             return_source_documents=True,
             chain_type_kwargs={"prompt": prompt},
         )
@@ -117,11 +119,7 @@ class RAGEngine:
         Retrieval is done up-front; tokens stream from Ollama in real time via httpx.
         """
         loop = asyncio.get_running_loop()
-        retriever = self._vectorstore.as_retriever(
-            search_type="similarity",
-            search_kwargs={"k": settings.retriever_top_k},
-        )
-        docs = await loop.run_in_executor(None, retriever.invoke, question)
+        docs = await loop.run_in_executor(None, self._retriever.invoke, question)
 
         context = "\n\n".join(d.page_content for d in docs)
         prompt_text = PROMPT_TEMPLATE.format(context=context, question=question)
@@ -143,7 +141,7 @@ class RAGEngine:
                 "model": settings.ollama_model,
                 "prompt": prompt_text,
                 "stream": True,
-                "options": {"temperature": 0.1},
+                "options": {"temperature": 0.1, "num_ctx": 1024, "num_predict": 256},
             }
             async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
                 async with client.stream("POST", url, json=payload) as resp:
