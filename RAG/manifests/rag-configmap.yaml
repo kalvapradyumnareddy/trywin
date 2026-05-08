@@ -11,4 +11,4 @@ data:
   DOCUMENTS_DIR: "/data/documents"
   CHUNK_SIZE: "300"
   CHUNK_OVERLAP: "50"
-  RETRIEVER_TOP_K: "2"
+  RETRIEVER_TOP_K: "3"

@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt"}
 
-PROMPT_TEMPLATE = """Answer using only the context below. If the answer isn't there, say "I don't know."
+PROMPT_TEMPLATE = """Use the context below to answer the question. Be direct and helpful. Summarize the relevant information clearly.
 
 Context:
 {context}
@@ -82,8 +82,8 @@ class RAGEngine:
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
             temperature=0.1,
-            num_ctx=512,
-            num_predict=150,
+            num_ctx=1024,
+            num_predict=200,
         )
         self._retriever = self._vectorstore.as_retriever(
             search_type="similarity",
@@ -267,8 +267,8 @@ class RAGEngine:
                 "stream": True,
                 "options": {
                     "temperature": 0.1,
-                    "num_ctx": 512,
-                    "num_predict": 150,
+                    "num_ctx": 1024,
+                    "num_predict": 200,
                     "num_batch": 512,
                 },
             }
