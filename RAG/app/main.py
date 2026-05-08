@@ -32,6 +32,7 @@ async def lifespan(app: FastAPI):
         logger.info("Auto-ingesting existing documents from %s", settings.documents_dir)
         rag.ingest_directory(settings.documents_dir)
     logger.info("RAG engine ready. Vector store has %d chunks.", rag.collection_count())
+    asyncio.create_task(rag.prewarm())
     yield
     logger.info("Shutting down RAG engine.")
 

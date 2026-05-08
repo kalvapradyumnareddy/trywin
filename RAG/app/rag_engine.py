@@ -1,7 +1,9 @@
 import asyncio
+import hashlib
 import json
 import os
 import logging
+from collections import OrderedDict
 from pathlib import Path
 from typing import AsyncGenerator, List, Tuple
 
@@ -24,15 +26,15 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc", ".txt"}
 
-PROMPT_TEMPLATE = """Use the following pieces of context to answer the question at the end.
-If you don't know the answer from the context, say that you don't know — do not make up an answer.
+PROMPT_TEMPLATE = """Answer using only the context below. If the answer isn't there, say "I don't know."
 
 Context:
 {context}
 
 Question: {question}
-
 Answer:"""
+
+_CACHE_MAX = 100
 
 
 def _get_loader(file_path: str):
@@ -51,6 +53,8 @@ class RAGEngine:
         os.makedirs(settings.chroma_persist_dir, exist_ok=True)
         os.makedirs(settings.documents_dir, exist_ok=True)
 
+        self._cache: OrderedDict = OrderedDict()
+
         self._embeddings = FastEmbedEmbeddings(
             model_name=settings.embedding_model,
             cache_dir=os.environ.get("FASTEMBED_CACHE_PATH"),
@@ -68,14 +72,49 @@ class RAGEngine:
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
             temperature=0.1,
-            num_ctx=1024,
-            num_predict=256,
+            num_ctx=512,
+            num_predict=150,
         )
         self._retriever = self._vectorstore.as_retriever(
             search_type="similarity",
             search_kwargs={"k": settings.retriever_top_k},
         )
         self._qa_chain = self._build_chain()
+
+    # ------------------------------------------------------------------
+    # Cache helpers
+    # ------------------------------------------------------------------
+
+    def _cache_key(self, question: str) -> str:
+        return hashlib.md5(question.strip().lower().encode()).hexdigest()
+
+    def _store_cache(self, key: str, result: dict) -> None:
+        if len(self._cache) >= _CACHE_MAX:
+            self._cache.popitem(last=False)
+        self._cache[key] = result
+
+    # ------------------------------------------------------------------
+    # Model pre-warm
+    # ------------------------------------------------------------------
+
+    async def prewarm(self) -> None:
+        """Send a 1-token prompt to load the model into Ollama's memory."""
+        try:
+            url = settings.ollama_base_url.rstrip("/") + "/api/generate"
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+                await client.post(url, json={
+                    "model": settings.ollama_model,
+                    "prompt": "hi",
+                    "stream": False,
+                    "options": {"num_predict": 1},
+                })
+            logger.info("Model pre-warm complete")
+        except Exception as exc:
+            logger.warning("Model pre-warm failed (non-fatal): %s", exc)
+
+    # ------------------------------------------------------------------
+    # Chain
+    # ------------------------------------------------------------------
 
     def _build_chain(self) -> RetrievalQA:
         prompt = PromptTemplate(
@@ -90,6 +129,10 @@ class RAGEngine:
             chain_type_kwargs={"prompt": prompt},
         )
 
+    # ------------------------------------------------------------------
+    # Ingestion
+    # ------------------------------------------------------------------
+
     def ingest_file(self, file_path: str) -> int:
         loader = _get_loader(file_path)
         if loader is None:
@@ -99,6 +142,7 @@ class RAGEngine:
         chunks = self._splitter.split_documents(docs)
         self._vectorstore.add_documents(chunks)
         logger.info("Ingested %d chunks from %s", len(chunks), file_path)
+        self._cache.clear()
         return len(chunks)
 
     def ingest_directory(self, directory: str) -> dict:
@@ -113,11 +157,45 @@ class RAGEngine:
                     results[path.name] = {"status": "error", "error": str(exc)}
         return results
 
+    # ------------------------------------------------------------------
+    # Query
+    # ------------------------------------------------------------------
+
+    def query(self, question: str) -> dict:
+        ckey = self._cache_key(question)
+        if ckey in self._cache:
+            self._cache.move_to_end(ckey)
+            return self._cache[ckey]
+
+        result = self._qa_chain.invoke({"query": question})
+        seen: set = set()
+        unique_sources: list = []
+        for doc in result.get("source_documents", []):
+            src = (doc.metadata.get("source", ""), doc.metadata.get("page"))
+            if src not in seen:
+                seen.add(src)
+                unique_sources.append({"source": src[0], "page": src[1]})
+
+        out = {"answer": result["result"], "sources": unique_sources}
+        self._store_cache(ckey, out)
+        return out
+
     async def astream_query(self, question: str) -> Tuple[list, AsyncGenerator[str, None]]:
         """
         Returns (sources, token_async_generator).
-        Retrieval is done up-front; tokens stream from Ollama in real time via httpx.
+        Cache hit: streams stored answer instantly.
+        Cache miss: streams tokens from Ollama, buffers for cache.
         """
+        ckey = self._cache_key(question)
+        if ckey in self._cache:
+            self._cache.move_to_end(ckey)
+            cached = self._cache[ckey]
+
+            async def _from_cache() -> AsyncGenerator[str, None]:
+                yield cached["answer"]
+
+            return cached["sources"], _from_cache()
+
         loop = asyncio.get_running_loop()
         docs = await loop.run_in_executor(None, self._retriever.invoke, question)
 
@@ -127,13 +205,12 @@ class RAGEngine:
         seen: set = set()
         sources: list = []
         for d in docs:
-            key = (d.metadata.get("source", ""), d.metadata.get("page"))
-            if key not in seen:
-                seen.add(key)
-                sources.append({
-                    "source": d.metadata.get("source", ""),
-                    "page": d.metadata.get("page"),
-                })
+            src = (d.metadata.get("source", ""), d.metadata.get("page"))
+            if src not in seen:
+                seen.add(src)
+                sources.append({"source": src[0], "page": src[1]})
+
+        buf: list = []
 
         async def _token_gen() -> AsyncGenerator[str, None]:
             url = settings.ollama_base_url.rstrip("/") + "/api/generate"
@@ -141,7 +218,7 @@ class RAGEngine:
                 "model": settings.ollama_model,
                 "prompt": prompt_text,
                 "stream": True,
-                "options": {"temperature": 0.1, "num_ctx": 1024, "num_predict": 256},
+                "options": {"temperature": 0.1, "num_ctx": 512, "num_predict": 150},
             }
             async with httpx.AsyncClient(timeout=httpx.Timeout(600.0)) as client:
                 async with client.stream("POST", url, json=payload) as resp:
@@ -151,31 +228,13 @@ class RAGEngine:
                         data = json.loads(line)
                         token = data.get("response", "")
                         if token:
+                            buf.append(token)
                             yield token
                         if data.get("done"):
                             break
+            self._store_cache(ckey, {"answer": "".join(buf), "sources": sources})
 
         return sources, _token_gen()
-
-    def query(self, question: str) -> dict:
-        result = self._qa_chain.invoke({"query": question})
-        sources = [
-            {
-                "source": doc.metadata.get("source", "unknown"),
-                "page": doc.metadata.get("page"),
-            }
-            for doc in result.get("source_documents", [])
-        ]
-        # Deduplicate sources
-        seen = set()
-        unique_sources = []
-        for s in sources:
-            key = (s["source"], s["page"])
-            if key not in seen:
-                seen.add(key)
-                unique_sources.append(s)
-
-        return {"answer": result["result"], "sources": unique_sources}
 
     def list_documents(self) -> List[str]:
         docs = []
